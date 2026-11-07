@@ -18,8 +18,14 @@ jobs:
       image: ros:jazzy-ros-base
     steps:
       - uses: actions/checkout@v4
-      - name: Build baseline
+      - name: Build baseline and adapter
         shell: bash
         run: |
           source /opt/ros/jazzy/setup.bash
           colcon build --base-paths robotcore_ros --packages-select robotcore_baseline --cmake-args -DCMAKE_BUILD_TYPE=Release
+      - name: Run DDS adapter smoke test
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          timeout 20s ros2 run robotcore_baseline dds_adapter_smoke
