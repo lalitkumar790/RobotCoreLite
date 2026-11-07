@@ -5,8 +5,10 @@
 ## Mission
 Evaluate whether alternative local communication transports can reduce ROS 2 node communication overhead while preserving correctness, reliability, and integration usability. **No speedup is claimed.**
 
-## Current milestone: Phase 1 — DDS baseline
+## Implemented: Phase 1 DDS baseline and Phase 2 API foundation
 - ROS 2 C++ ping/pong executables with sequence IDs and monotonic RTT timing
+- ROS-independent C++17 Transport interface, explicit DDS fallback and payload validation
+- ROS 2 DDS adapter implementing the interface and a functional in-process smoke executable
 - CSV of each completed sample **and** timeout
 - Parameterized payload size, sample count, warmup, timeout, QoS, and run ID
 - Repeatable shell orchestration, captured environment metadata, analysis script, CI lint and Python self-tests
@@ -25,6 +27,22 @@ python3 scripts/analyze_results.py results/raw results/reports
 ```
 Run in an isolated ROS_DOMAIN_ID; stop other high-load processes and record hardware configuration. The runner creates timestamped raw CSVs and metadata. Results are generated locally, **not committed as fabricated benchmarks**.
 
+### Build and test the core interface
+```bash
+cmake -S robotcore_core -B build/core -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/core
+ctest --test-dir build/core --output-on-failure
+```
+
+### DDS adapter smoke test
+```bash
+source /opt/ros/jazzy/setup.bash
+colcon build --base-paths robotcore_ros --packages-select robotcore_baseline --cmake-args -DCMAKE_BUILD_TYPE=Release
+source install/setup.bash
+ros2 run robotcore_baseline dds_adapter_smoke
+```
+This checks functional delivery only. It does not produce publishable performance results. See [transport API](docs/transport-api.md).
+
 ### Research plan
 1. Measure baseline DDS under controlled conditions.
 2. Introduce transport abstraction and explicit configuration.
@@ -33,7 +51,7 @@ Run in an isolated ROS_DOMAIN_ID; stop other high-load processes and record hard
 5. Compare against ROS 2 baseline and available ROS 2 shared-memory/loaning options fairly.
 6. Release raw data, plots, reproducibility notes, sensor workload demo and technical report.
 
-Design: [architecture](docs/architecture.md) · [methodology](docs/benchmark-methodology.md) · [decisions](docs/design-decisions.md)
+Design: [transport API](docs/transport-api.md) · [architecture](docs/architecture.md) · [methodology](docs/benchmark-methodology.md) · [decisions](docs/design-decisions.md)
 
 ## Interpreting old numbers
 659 µs baseline, 68 µs IPC, 112 µs SHM, 44 µs persistent IPC, 33 µs persistent SHM are **unverified historical leads**, not measurements from this codebase.
