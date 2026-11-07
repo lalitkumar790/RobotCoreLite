@@ -1,0 +1,16 @@
+name: IPC Transport CI
+on:
+  push:
+  pull_request:
+jobs:
+  ipc-contract:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build IPC with warnings treated as errors
+        run: |
+          cmake -S robotcore_transports/ipc -B build/ipc -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build/ipc --parallel
+      - name: Cross-process IPC tests
+        run: |
+          ctest --test-dir build/ipc --output-on-failure --repeat until-fail:20

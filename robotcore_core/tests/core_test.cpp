@@ -39,10 +39,11 @@ int main() {
   assert(validate(c));
   assert(resolve_transport(c).second == TransportKind::dds);
   c.transport = TransportKind::ipc;
-  assert(resolve_transport(c).first.error == Error::unsupported);
+  assert(resolve_transport(c).first);
+  assert(resolve_transport(c).second == TransportKind::ipc);
   c.allow_dds_fallback = true;
   assert(resolve_transport(c).first);
-  assert(resolve_transport(c).second == TransportKind::dds);
+  assert(resolve_transport(c).second == TransportKind::ipc);
   c.transport = TransportKind::shared_memory;
   assert(resolve_transport(c).second == TransportKind::dds);
   c.transport = TransportKind::persistent_shared_memory;

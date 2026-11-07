@@ -5,7 +5,7 @@
 ## Mission
 Evaluate whether alternative local communication transports can reduce ROS 2 node communication overhead while preserving correctness, reliability, and integration usability. **No speedup is claimed.**
 
-## Implemented: Phase 1 DDS baseline and Phase 2 API foundation
+## Implemented: Phase 1 DDS baseline, Phase 2 API, Phase 3 initial Linux IPC
 - ROS 2 C++ ping/pong executables with sequence IDs and monotonic RTT timing
 - ROS-independent C++17 Transport interface, explicit DDS fallback and payload validation
 - ROS 2 DDS adapter implementing the interface and a functional in-process smoke executable
@@ -43,10 +43,18 @@ ros2 run robotcore_baseline dds_adapter_smoke
 ```
 This checks functional delivery only. It does not produce publishable performance results. See [transport API](docs/transport-api.md).
 
+### IPC cross-process tests
+```bash
+cmake -S robotcore_transports/ipc -B build/ipc -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/ipc
+ctest --test-dir build/ipc --output-on-failure
+```
+This validates functional framing, sequencing and lifecycle; it does **not** measure IPC speed. See [IPC design and limitations](docs/ipc-transport.md).
+
 ### Research plan
 1. Measure baseline DDS under controlled conditions.
 2. Introduce transport abstraction and explicit configuration.
-3. Add optimized IPC, bounded framing and failure handling.
+3. Add optimized IPC, bounded framing and failure handling (initial implementation; hardening pending).
 4. Add shared memory and persistent buffer ownership, cleanup and concurrent access tests.
 5. Compare against ROS 2 baseline and available ROS 2 shared-memory/loaning options fairly.
 6. Release raw data, plots, reproducibility notes, sensor workload demo and technical report.
