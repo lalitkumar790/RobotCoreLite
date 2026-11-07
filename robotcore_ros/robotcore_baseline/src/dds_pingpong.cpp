@@ -60,7 +60,7 @@ public:
     warmup_(warmup), timeout_(timeout), run_id_(run_id), data_(payload, 0xa5),
     output_(csv, std::ios::out | std::ios::trunc) {
     if (!output_) throw std::runtime_error("cannot open CSV: " + csv);
-    output_ << "run_id,seq,payload_bytes,status,rtt_us,rtt_half_proxy_us\\n";
+    output_ << "run_id,seq,payload_bytes,status,rtt_us,rtt_half_proxy_us\n";
     publisher_ = create_publisher<Packet>("robotcore/request", qos);
     subscriber_ = create_subscription<Packet>("robotcore/echo", qos,
       [this](Packet::ConstSharedPtr msg) { receive(*msg); });
@@ -77,7 +77,7 @@ private:
     if (status == "ok") output_ << std::fixed << std::setprecision(3)
                                 << rtt << ',' << rtt / 2.0;
     else output_ << ',';
-    output_ << '\\n';
+    output_ << '\n';
     output_.flush();
   }
   void receive(const Packet& msg) {
@@ -156,13 +156,13 @@ int main(int argc, char** argv) {
       rclcpp::executors::SingleThreadedExecutor executor;
       executor.add_node(node);
       while (rclcpp::ok() && !node->done()) executor.spin_some(10ms);
-      std::cout << "received=" << node->received() << " lost=" << node->lost() << '\\n';
+      std::cout << "received=" << node->received() << " lost=" << node->lost() << '\n';
       if (node->lost() > 0) ret = 2;
     } else {
       throw std::invalid_argument("role must be initiator or responder");
     }
   } catch (const std::exception& ex) {
-    std::cerr << "error: " << ex.what() << '\\n';
+    std::cerr << "error: " << ex.what() << '\n';
     ret = 1;
   }
   rclcpp::shutdown();
