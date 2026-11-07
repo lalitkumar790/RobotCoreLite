@@ -52,7 +52,7 @@ def main(argv):
     if not results:
         raise SystemExit('No measured CSV samples found; no report generated.')
     dest = pathlib.Path(argv[2]); dest.mkdir(parents=True, exist_ok=True)
-    (dest / 'summary.json').write_text(json.dumps(results, indent=2) + '\\n')
+    (dest / 'summary.json').write_text(json.dumps(results, indent=2) + '\n')
     fields = list(results[0].keys())
     with (dest / 'summary.csv').open('w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fields)
@@ -65,7 +65,7 @@ def main(argv):
     def fmt(v): return f'{v:.2f}' if v is not None else 'N/A'
     for r in results:
         lines.append(f"| {r['run_id']} | {r['payload_bytes']} | {r['received']} / {r['attempted']} | {fmt(r['mean_rtt_us'])} | {fmt(r['p95_rtt_us'])} | {fmt(r['p99_rtt_us'])} | {r['loss_rate']:.2%} |")
-    (dest / 'report.md').write_text('\\n'.join(lines) + '\\n')
+    (dest / 'report.md').write_text('\n'.join(lines) + '\n')
     print('Created', dest / 'report.md')
 
 
