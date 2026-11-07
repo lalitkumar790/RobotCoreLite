@@ -28,9 +28,9 @@ uint64_t get_sequence(const std::vector<uint8_t>& data) {
   return seq;
 }
 std::string csv_escape(const std::string& x) {
-  std::string y = """;
+  std::string y(1, '"');
   for (char c : x) { if (c == '"') y += "\"\""; else y += c; }
-  return y + """;
+  return y + '"';
 }
 }
 
