@@ -18,9 +18,9 @@ Target **Ubuntu 24.04 + ROS 2 Jazzy**, GCC / C++17. The runner checks the actual
 ### Quick start (Ubuntu 24.04 with ROS 2 Jazzy installed)
 ```bash
 source /opt/ros/jazzy/setup.bash
-colcon build --packages-select robotcore_baseline --cmake-args -DCMAKE_BUILD_TYPE=Release
+colcon build --base-paths robotcore_ros --packages-select robotcore_baseline --cmake-args -DCMAKE_BUILD_TYPE=Release
 source install/setup.bash
-./scripts/run_benchmarks.sh
+bash scripts/run_benchmarks.sh
 python3 scripts/analyze_results.py results/raw results/reports
 ```
 Run in an isolated ROS_DOMAIN_ID; stop other high-load processes and record hardware configuration. The runner creates timestamped raw CSVs and metadata. Results are generated locally, **not committed as fabricated benchmarks**.
