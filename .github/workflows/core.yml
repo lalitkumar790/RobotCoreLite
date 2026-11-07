@@ -1,0 +1,15 @@
+name: Core API CI
+on:
+  push:
+  pull_request:
+jobs:
+  core-api:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: cmake -S robotcore_core -B build/core -DCMAKE_BUILD_TYPE=Debug
+      - name: Build warnings as errors
+        run: cmake --build build/core --parallel
+      - name: Execute CTest
+        run: ctest --test-dir build/core --output-on-failure
