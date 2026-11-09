@@ -40,6 +40,7 @@ struct Options {
   std::uint64_t samples{1000};
   std::uint64_t warmup{100};
   std::uint64_t timeout_ms{1000};
+  std::uint64_t discovery_timeout_ms{15000};
   std::size_t payload_bytes{64};
   std::size_t qos_depth{10};
   bool reliable{true};
@@ -67,6 +68,7 @@ Options parse(int argc, char** argv) {
     else if (key == "--samples") opts.samples = positive_integer(val, key, 1, 10000000);
     else if (key == "--warmup") opts.warmup = positive_integer(val, key, 1, 1000000);
     else if (key == "--timeout-ms") opts.timeout_ms = positive_integer(val, key, 1, 60000);
+    else if (key == "--discovery-timeout-ms") opts.discovery_timeout_ms = positive_integer(val, key, 1, 60000);
     else if (key == "--payload-bytes") opts.payload_bytes =
       static_cast<std::size_t>(positive_integer(val, key, 1, robotcore::kMaxPayloadBytes));
     else if (key == "--qos-depth") opts.qos_depth =
@@ -116,6 +118,12 @@ public:
   }
 
   int run() {
+    // Probes use sequence zero and are never included in warmup or CSV.
+    // In particular, DDS discovery can take longer than a measurement timeout.
+    if (!await_discovery()) {
+      std::cerr << "No working echo endpoint before discovery deadline\n";
+      return 3;
+    }
     std::ofstream out(opts_.csv, std::ios::trunc);
     if (!out) throw std::runtime_error("cannot create CSV: " + opts_.csv);
 #if defined(ROBOTCORE_BENCH_DDS)
@@ -173,6 +181,28 @@ public:
     return timeouts ? 2 : 0;
   }
 private:
+  bool await_discovery() {
+    const auto deadline = Clock::now() + std::chrono::milliseconds(opts_.discovery_timeout_ms);
+    while (running && Clock::now() < deadline) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        sequence_ = 0;
+        acknowledged_ = false;
+      }
+      const auto status = transport_.publish({0, expected_payload_});
+      if (!status) {
+        std::cerr << "Discovery publish failed: " << status.detail << "\n";
+        return false;
+      }
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (condition_.wait_for(lock, std::chrono::milliseconds(400),
+            [this] { return acknowledged_ || !running.load(); }) && acknowledged_) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   robotcore::Transport& transport_;
   const Options& opts_;
   std::vector<std::uint8_t> expected_payload_;

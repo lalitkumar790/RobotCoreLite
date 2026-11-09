@@ -41,5 +41,8 @@ jobs:
           responder=$!
           trap 'kill "$responder" 2>/dev/null || true; wait "$responder" 2>/dev/null || true' EXIT
           sleep 3
-          timeout 45s ./install/robotcore_baseline/lib/robotcore_baseline/transport_bench_dds --role initiator --payload-bytes 128 --samples 30 --warmup 15 --timeout-ms 2000 --run-id ci-dds --csv /tmp/rc-dds.csv
+          if ! timeout 45s ./install/robotcore_baseline/lib/robotcore_baseline/transport_bench_dds --role initiator --payload-bytes 128 --samples 30 --warmup 15 --timeout-ms 2000 --discovery-timeout-ms 18000 --run-id ci-dds --csv /tmp/rc-dds.csv; then
+            cat /tmp/rc-dds-server.log >&2
+            exit 1
+          fi
           test "$(wc -l < /tmp/rc-dds.csv)" -eq 31
