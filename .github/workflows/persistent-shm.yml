@@ -1,0 +1,15 @@
+name: Persistent Shared Memory CI
+on:
+  push:
+  pull_request:
+jobs:
+  persistent:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build with strict compiler warnings
+        run: |
+          cmake -S robotcore_transports/persistent_shm -B build/pshm -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build/pshm --parallel
+      - name: Repeated crash and multi-session tests
+        run: ctest --test-dir build/pshm --output-on-failure --repeat until-fail:15

@@ -27,3 +27,9 @@ The current SHM implementation already reuses two slots within one session, so c
 ## Current status
 
 **Design only.** The `persistent_shared_memory` transport kind remains unsupported and resolves to DDS only with an explicit fallback. No persistent-mode latency, throughput or zero-copy performance has been measured.
+
+## Initial implementation — manager-controlled persistent epochs
+
+The dedicated `robotcore_transports/persistent_shm` C++ module now supplies `PersistentRegionManager` and `PersistentSharedMemoryTransport`. The manager creates and owns the POSIX named mapping independently of endpoint lifetimes, and `begin_session()` resets both slots and increments an epoch **only when no endpoint process from the previous session is alive**. Each server/client role may attach once per epoch; a separate process can act as the manager. Cross-process tests verify repeated sessions reuse the same mapped object (device and inode remain unchanged), and simulate a crashed client with a stale lease and potentially abandoned slot. The manager checks process PID plus start-time to prevent PID reuse false positives; stale messages are discarded at an explicit epoch reset. This is **not** transparent reconnection or zero-copy: endpoints copy payloads into and out of preallocated buffers, and the manager performs explicit recovery. Sessions require coordinated shutdown/restart of both roles. The manager rejects destruction while endpoints remain live.
+
+A future advanced mode still needs loan/return buffers, manager crash recovery, access-control hardening, multiple clients, and real-world measurements. Do not interpret initial functional correctness as a speedup.

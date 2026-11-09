@@ -54,7 +54,13 @@ int main() {
   c.reliable = true;
   c.queue_depth = 10;
   c.transport = TransportKind::persistent_shared_memory;
-  assert(resolve_transport(c).second == TransportKind::dds);
+  assert(resolve_transport(c).first.error == Error::invalid_argument);
+  c.queue_depth = 1;
+  assert(resolve_transport(c).first);
+  assert(resolve_transport(c).second == TransportKind::persistent_shared_memory);
+  c.allow_dds_fallback = false;
+  assert(resolve_transport(c).second == TransportKind::persistent_shared_memory);
+  c.queue_depth = 10;
   c.queue_depth = 0;
   assert(validate(c).error == Error::invalid_argument);
   c.queue_depth = 10;
