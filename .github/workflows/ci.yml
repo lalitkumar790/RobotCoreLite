@@ -63,6 +63,12 @@ jobs:
             bash scripts/run_comparison.sh
           grep -rl 'laser360' results/reports/ | grep -q .
 
+      - name: Complete LaserScan metadata and CDR envelope roundtrip tests
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          timeout 20s ros2 run robotcore_baseline scan_codec_test
       - name: Real ROS 2 LaserScan to IPC cross-process functional integration
         shell: bash
         run: |
