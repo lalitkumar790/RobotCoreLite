@@ -53,3 +53,5 @@ jobs:
           RUNS=1 PAYLOADS=64 SAMPLES=20 WARMUP=5 TIMEOUT_MS=2000 MAX_RUN_SECS=60 \
             bash scripts/run_comparison.sh
           test -n "$(find results/reports -name comparison.md -size +0c -print -quit)"
+          test -n "$(find results/reports -name resources.md -size +0c -print -quit)"
+          test -n "$(find results/raw -name '*.resources.csv' -size +0c -print -quit)"

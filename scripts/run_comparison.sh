@@ -16,15 +16,19 @@ WARMUP="$(printenv WARMUP || echo 100)"
 TIMEOUT_MS="$(printenv TIMEOUT_MS || echo 1000)"
 DISCOVERY_TIMEOUT_MS="$(printenv DISCOVERY_TIMEOUT_MS || echo 15000)"
 MAX_RUN_SECS="$(printenv MAX_RUN_SECS || echo 180)"
+PROFILE_PERIOD_MS="$(printenv PROFILE_PERIOD_MS || echo 100)"
 PAYLOADS="$(printenv PAYLOADS || echo '64 1024 65536')"
 RELIABILITY="$(printenv RELIABILITY || echo reliable)"
 QOS_DEPTH="$(printenv QOS_DEPTH || echo 1)"
-for value in "$RUNS" "$SAMPLES" "$WARMUP" "$TIMEOUT_MS" "$DISCOVERY_TIMEOUT_MS" "$MAX_RUN_SECS" "$QOS_DEPTH"; do
+for value in "$RUNS" "$SAMPLES" "$WARMUP" "$TIMEOUT_MS" "$DISCOVERY_TIMEOUT_MS" "$MAX_RUN_SECS" "$QOS_DEPTH" "$PROFILE_PERIOD_MS"; do
   if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
     echo "RUNS/SAMPLES/WARMUP/TIMEOUT_MS/MAX_RUN_SECS/QOS_DEPTH must be positive integers" >&2
     exit 1
   fi
 done
+if (( PROFILE_PERIOD_MS < 10 || PROFILE_PERIOD_MS > 5000 )); then
+  echo "PROFILE_PERIOD_MS must be between 10 and 5000" >&2; exit 1
+fi
 if [[ "$RELIABILITY" != "reliable" ]]; then
   echo "IPC/SHM comparison requires RELIABILITY=reliable." >&2
   exit 1
@@ -85,7 +89,7 @@ trap finish EXIT
   printf 'git_sha=%s\n' "$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
   printf 'build_type=Release\nruns=%s\nsamples=%s\nwarmup=%s\n' "$RUNS" "$SAMPLES" "$WARMUP"
   printf 'payloads=%s\ntimeout_ms=%s\ndiscovery_timeout_ms=%s\nmax_run_secs=%s\n' "$PAYLOADS" "$TIMEOUT_MS" "$DISCOVERY_TIMEOUT_MS" "$MAX_RUN_SECS"
-  printf 'reliability=%s\nqos_depth=%s\n' "$RELIABILITY" "$QOS_DEPTH"
+  printf 'reliability=%s\nqos_depth=%s\nprofile_period_ms=%s\n' "$RELIABILITY" "$QOS_DEPTH" "$PROFILE_PERIOD_MS"
   if command -v dpkg-query >/dev/null; then
     dpkg-query -W "ros-$EXPECTED-rclcpp" "ros-$EXPECTED-rmw-*" 2>/dev/null || true
   fi
@@ -147,18 +151,20 @@ for ((run=1; run<=RUNS; ++run)); do
       if ! kill -0 "$responder" 2>/dev/null; then
         echo "Responder exited prematurely: $OUT/$label.server.log" >&2; exit 1
       fi
+      # Sample both OS processes on the same initiator-active time window.
+      # Persistent mode additionally samples the independent manager process.
       set +e
-      if [[ -x /usr/bin/time ]]; then
-        /usr/bin/time -f 'wall_seconds=%e\nuser_seconds=%U\nsystem_seconds=%S\nmax_rss_kb=%M' \
-          -o "$OUT/$label.resources.txt" timeout "${MAX_RUN_SECS}s" \
-          "${cmd[@]}" --role initiator "${common[@]}" "${extra[@]}" \
-          --samples "$SAMPLES" --warmup "$WARMUP" --timeout-ms "$TIMEOUT_MS" --discovery-timeout-ms "$DISCOVERY_TIMEOUT_MS" \
-          --run-id "$label" --csv "$csv" > "$OUT/$label.client.log" 2>&1
-      else
-        timeout "${MAX_RUN_SECS}s" "${cmd[@]}" --role initiator "${common[@]}" "${extra[@]}" \
-          --samples "$SAMPLES" --warmup "$WARMUP" --timeout-ms "$TIMEOUT_MS" --discovery-timeout-ms "$DISCOVERY_TIMEOUT_MS" \
-          --run-id "$label" --csv "$csv" > "$OUT/$label.client.log" 2>&1
-      fi
+      python3 "$ROOT/scripts/profile_processes.py" \
+        --responder-pid "$responder" \
+        --manager-pid "${manager:-0}" \
+        --period-ms "$PROFILE_PERIOD_MS" \
+        --max-run-secs "$MAX_RUN_SECS" \
+        --resource-csv "$OUT/$label.resources.csv" \
+        --initiator-log "$OUT/$label.client.log" \
+        -- "${cmd[@]}" --role initiator "${common[@]}" "${extra[@]}" \
+        --samples "$SAMPLES" --warmup "$WARMUP" --timeout-ms "$TIMEOUT_MS" \
+        --discovery-timeout-ms "$DISCOVERY_TIMEOUT_MS" \
+        --run-id "$label" --csv "$csv"
       exit_code=$?
       set -e
       cleanup
@@ -175,5 +181,7 @@ for ((run=1; run<=RUNS; ++run)); do
 done
 python3 "$ROOT/scripts/analyze_results.py" "$OUT" "$REPORT"
 python3 "$ROOT/scripts/summarize_comparison.py" "$REPORT/summary.json" "$REPORT/comparison.md"
+python3 "$ROOT/scripts/summarize_resources.py" "$OUT" "$REPORT"
 echo "Raw measurements: $OUT"
 echo "Summary: $REPORT/report.md"
+echo "Paired resource observations: $REPORT/resources.md"
