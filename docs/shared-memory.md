@@ -34,3 +34,9 @@ A separate cross-process test confirms that duplicate clients are refused, order
 ## Persistent mode: research distinction
 
 The current `shared_memory` mode preallocates and reuses two slots *within one server lifetime*, but the mapping is unlinked when its owner stops. This is not a distinct persistent transport. A future `persistent_shared_memory` mode must keep a managed allocation pool across endpoint sessions, implement epoch/generation fencing and crash-safe lease recovery, and quantify the avoided setup/allocation work. With the current `Transport::publish(const Message&)` and copied receive callback, even persistent mode cannot honestly claim zero-copy application delivery. A separate loan/return API is required for that claim; see the design proposal.
+
+## Reattachment safety (v3 shared-memory layout)
+
+Reattachment now checks **both directional slot semaphores** (one free/zero filled) and atomic callback-active markers before accepting a new client. A bounded 200 ms quiescence grace period allows an ordinary callback to finish; if an earlier session left an unread frame, a pending producer, or an executing callback, attachment returns an error rather than inheriting stale work. After a failed reattach, the owning server must arrange quiescence or recreate the region. Malformed frames and server callback exceptions mark the region faulted, so clients reject it rather than continuing with a stopped receiver. The format version is bumped to v3; earlier layouts must not be attached.
+
+This is intentionally **conservative fail-closed reuse**, not a fully crash-recoverable epoch/lease protocol. Semaphore state is only a snapshot; **concurrent start/stop and publish remain unsupported**, so the caller must serialize lifecycle operations. A future persistent mode needs generation fencing and a stronger manager protocol rather than inheriting this single-session shortcut.

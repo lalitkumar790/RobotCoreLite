@@ -19,7 +19,7 @@
 
 namespace robotcore {
 namespace {
-constexpr std::uint32_t kMagic = 0x52435332; // RCS2: PID-validated owner identity.
+constexpr std::uint32_t kMagic = 0x52435333; // RCS3: active callback/session cleanliness tracking.
 constexpr int kPollMs = 100;
 constexpr int kWriteTimeoutMs = 2000;
 
@@ -38,6 +38,7 @@ struct Region {
   std::uint32_t owner_pid;
   std::uint32_t reserved;
   std::uint64_t owner_start_ticks;
+  std::uint32_t callbacks_active[2];
   Slot slots[2];
 };
 std::uint8_t* bytes(Region* region, int slot) {
@@ -85,6 +86,22 @@ bool pidfd_alive(int fd) {
   // A pidfd becomes readable when that specific process exits.
   const int ready = ::poll(&p, 1, 0);
   return ready == 0;
+}
+// Fail closed when an earlier client left a frame or callback in flight.
+// sem_getvalue is only a snapshot, so this relies on documented non-concurrent
+// client stop/publish and the atomic exclusive client claim.
+bool clean_slots(Region* region) {
+  for (int i = 0; i < 2; ++i) {
+    if (__atomic_load_n(&region->callbacks_active[i], __ATOMIC_ACQUIRE) != 0u)
+      return false;
+    int free_count = -1, filled_count = -1;
+    auto& slot = region->slots[i];
+    if (::sem_getvalue(&slot.free, &free_count) != 0 ||
+        ::sem_getvalue(&slot.filled, &filled_count) != 0 ||
+        free_count != 1 || filled_count != 0)
+      return false;
+  }
+  return true;
 }
 bool valid_name(const std::string& name) {
   return name.size() > 1 && name.size() <= 200 && name[0] == '/'
@@ -196,6 +213,20 @@ Status SharedMemoryTransport::start(ReceiveCallback callback) {
       release_resources();
       return Status::failure(Error::closed, "shared-memory server closed during attach");
     }
+    // Permit reattachment only when the prior session's two slots are idle
+    // and neither receiver is still executing the prior callback.
+    const auto quiesce_deadline = std::chrono::steady_clock::now() +
+                                  std::chrono::milliseconds(200);
+    while (owner_alive() && !clean_slots(region) &&
+           std::chrono::steady_clock::now() < quiesce_deadline)
+      ::usleep(1000);
+    if (!owner_alive() || !clean_slots(region)) {
+      const auto closed = !owner_alive();
+      release_resources();
+      return Status::failure(closed ? Error::closed : Error::io_error,
+                             closed ? "shared-memory server exited during attach"
+                                    : "previous session has pending data or active callbacks");
+    }
   }
   callback_ = std::move(callback);
   running_ = true;
@@ -271,9 +302,24 @@ void SharedMemoryTransport::receive_loop() {
       valid = slot.hash == hash_payload(ptr, size);
       if (valid) message.payload.assign(ptr, ptr + size);
     }
+    // A message is copied before slot reuse, but a callback may still
+    // generate a response. Fence new clients until that callback finishes.
+    if (valid)
+      __atomic_store_n(&region->callbacks_active[index], 1u, __ATOMIC_RELEASE);
     ::sem_post(&slot.free);
-    if (!valid) { running_ = false; break; }
-    try { callback_(std::move(message)); } catch (...) { running_ = false; break; }
+    if (!valid) {
+      if (server_) __atomic_store_n(&region->ready, 3u, __ATOMIC_RELEASE);
+      running_ = false;
+      break;
+    }
+    try {
+      callback_(std::move(message));
+    } catch (...) {
+      if (server_) __atomic_store_n(&region->ready, 3u, __ATOMIC_RELEASE);
+      running_ = false;
+    }
+    __atomic_store_n(&region->callbacks_active[index], 0u, __ATOMIC_RELEASE);
+    if (!running_) break;
   }
 }
 

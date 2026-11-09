@@ -60,7 +60,7 @@ bash scripts/run_comparison.sh
 The runner builds Release binaries, rotates transport order between repetitions, records raw CSV and host metadata, and writes a summary report. **No benchmark result is included in the repository.** The CI smoke checks are functional only; see [comparison methodology](docs/comparison-methodology.md).
 
 ### Phase 4: bounded POSIX shared memory (initial)
-Linux POSIX shared memory now has a single-server/single-client C++ Transport implementation with two directional, bounded slots. Its process-shared semaphores synchronize reuse; each receive owns a copied payload. It reuses its two slots during each session, but does not yet implement a **distinct persistent shared-memory transport mode**, general crash recovery or production multi-client support. Single-client attachment is enforced and abrupt-server-exit leftovers are rejected rather than silently overwritten.
+Linux POSIX shared memory now has a single-server/single-client C++ Transport implementation with two directional, bounded slots. Its process-shared semaphores synchronize reuse; each receive owns a copied payload. It reuses its two slots during each session, but does not yet implement a **distinct persistent shared-memory transport mode**, general crash recovery or production multi-client support. Single-client attachment is enforced, stale queued messages and unfinished callbacks block reattachment, and abrupt-server-exit leftovers are rejected rather than silently overwritten.
 
 ```bash
 cmake -S robotcore_transports/shared_memory -B build/shm -DCMAKE_BUILD_TYPE=Debug
