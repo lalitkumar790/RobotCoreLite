@@ -37,11 +37,18 @@ target_link_libraries(robotcore_sensor_demo_ipc PUBLIC Threads::Threads)
 target_compile_options(robotcore_sensor_demo_ipc PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_executable(sensor_ipc_demo src/sensor_ipc_demo.cpp)
+target_include_directories(sensor_ipc_demo PRIVATE include)
 target_link_libraries(sensor_ipc_demo robotcore_sensor_demo_ipc Threads::Threads)
 ament_target_dependencies(sensor_ipc_demo rclcpp sensor_msgs)
 target_compile_options(sensor_ipc_demo PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-install(TARGETS dds_pingpong dds_adapter_smoke transport_bench_dds sensor_ipc_demo
-  DESTINATION lib/${PROJECT_NAME})
+# Execute actual ROS 2 CDR encode/decode tests with the Jazzy type support.
+add_executable(scan_codec_test src/scan_codec_test.cpp)
+target_include_directories(scan_codec_test PRIVATE include)
+ament_target_dependencies(scan_codec_test rclcpp sensor_msgs)
+target_compile_options(scan_codec_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+install(TARGETS dds_pingpong dds_adapter_smoke transport_bench_dds
+  sensor_ipc_demo scan_codec_test DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 ament_package()

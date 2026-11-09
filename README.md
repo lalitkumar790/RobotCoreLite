@@ -101,9 +101,9 @@ Sanitizer checks test selected memory/undefined-behavior paths; they do **not** 
 
 ### Native ROS 2 LaserScan → IPC demo (functional integration)
 
-A separate `sensor_ipc_demo` shows a real ROS 2 `sensor_msgs/msg/LaserScan` publisher, a ROS 2 subscriber/bridge into RobotCore-Lite's Linux Unix-socket IPC transport, and an independent sink process that validates the full 360-range frame contents and increasing sequence numbers. The scan data is **generated**, not hardware-captured. ROS topic discovery and application-level field conversion are exercised; only range values and a demonstration sequence identifier cross the IPC boundary, not the complete ROS message metadata. CI launches three separate OS processes, validates 20 frames, and checks the result.
+A separate `sensor_ipc_demo` uses a native ROS 2 `sensor_msgs/msg/LaserScan` publisher, a typed ROS 2 bridge into optimized Unix-socket IPC, and an independent sink that reconstructs and validates the **complete LaserScan message** (stamp, frame ID, geometry, ranges, and intensities) using a bounded versioned ROS 2 CDR envelope. The scan data is **generated**, not hardware-captured. A dedicated `scan_codec_test` covers exact field roundtrips and malformed envelopes; CI launches three processes and validates 20 frames.
 
-This is **not** a real-robot latency measurement, a type-preserving serializer, or proof that IPC outperforms DDS. The demo currently targets optimized IPC only; DDS baseline and other transports have separate functional benchmarks. See [demo scope](docs/native-ros-sensor-demo.md).
+This is **not** a real-robot latency measurement, a security-hardened CDR decoder, or proof that IPC outperforms DDS. The demo currently targets optimized IPC only; DDS baseline and other transports have separate functional benchmarks. See [demo scope](docs/native-ros-sensor-demo.md).
 
 ### Research plan
 1. Measure baseline DDS under controlled conditions.

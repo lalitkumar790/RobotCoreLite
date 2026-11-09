@@ -1,13 +1,13 @@
-// ROS 2 typed LaserScan -> RobotCore-Lite IPC -> checked receiver.
+// Complete native ROS 2 LaserScan -> versioned CDR -> IPC -> typed validation.
 // Three OS processes. Functional integration only, not a latency benchmark.
 #include "robotcore/ipc.hpp"
+#include "robotcore_ros/scan_codec.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
-#include <cstring>
 #include <iostream>
 #include <memory>
 #include <stdexcept>
@@ -19,34 +19,23 @@ namespace {
 using Scan = sensor_msgs::msg::LaserScan;
 using namespace std::chrono_literals;
 constexpr std::size_t kReadings = 360;
-constexpr std::size_t kPayloadBytes = kReadings * sizeof(float);
 constexpr const char* kScanTopic = "/robotcore/native_scan";
 
 float generated_range(std::size_t angle, std::uint64_t seq) {
   return 1.0f + static_cast<float>((angle + seq) % 100u) * 0.01f;
 }
-void write_u32(std::uint8_t* ptr, std::uint32_t n) {
-  for (int k = 0; k < 4; ++k)
-    ptr[k] = static_cast<std::uint8_t>(n >> (8 * k));
-}
-std::uint32_t read_u32(const std::uint8_t* ptr) {
-  std::uint32_t result = 0;
-  for (int k = 0; k < 4; ++k)
-    result |= static_cast<std::uint32_t>(ptr[k]) << (8 * k);
-  return result;
-}
-std::vector<std::uint8_t> encode_ranges(const Scan& scan) {
-  std::vector<std::uint8_t> bytes(kPayloadBytes);
-  for (std::size_t i = 0; i < kReadings; ++i) {
-    std::uint32_t bits = 0;
-    static_assert(sizeof(float) == sizeof(bits), "float32 expected");
-    std::memcpy(&bits, &scan.ranges[i], sizeof(bits));
-    write_u32(bytes.data() + i * 4, bits);
-  }
-  return bytes;
-}
+// Validate every field in this deterministic demo, not merely the ranges.
+// The CDR codec itself is generic and preserves arbitrary valid LaserScans.
 bool valid_scan(const Scan& scan) {
   if (scan.header.frame_id != "laser_frame" ||
+      scan.header.stamp.sec <= 0 ||
+      scan.header.stamp.nanosec >= 1000000000u ||
+      scan.angle_min != -3.14159265f ||
+      scan.angle_max != 3.14159265f ||
+      scan.angle_increment != 6.28318530f / static_cast<float>(kReadings) ||
+      scan.range_min != 0.2f || scan.range_max != 30.0f ||
+      scan.scan_time != 0.02f ||
+      scan.time_increment != 0.02f / static_cast<float>(kReadings) ||
       scan.ranges.size() != kReadings || scan.intensities.size() != 1 ||
       !std::isfinite(scan.intensities[0]) ||
       scan.intensities[0] < 1.0f || scan.intensities[0] > 1000000.0f)
@@ -55,17 +44,6 @@ bool valid_scan(const Scan& scan) {
   if (static_cast<float>(seq) != scan.intensities[0]) return false;
   for (std::size_t i = 0; i < kReadings; ++i)
     if (scan.ranges[i] != generated_range(i, seq)) return false;
-  return true;
-}
-bool valid_encoded(const robotcore::Message& message) {
-  if (message.sequence == 0 || message.sequence > 1000000 ||
-      message.payload.size() != kPayloadBytes) return false;
-  for (std::size_t i = 0; i < kReadings; ++i) {
-    const auto bits = read_u32(message.payload.data() + i * 4);
-    float range = 0;
-    std::memcpy(&range, &bits, sizeof(range));
-    if (range != generated_range(i, message.sequence)) return false;
-  }
   return true;
 }
 struct Options {
@@ -131,7 +109,7 @@ private:
 robotcore::Configuration ipc_config() {
   robotcore::Configuration c;
   c.transport = robotcore::TransportKind::ipc;
-  c.max_payload_bytes = kPayloadBytes;
+  c.max_payload_bytes = robotcore_ros::scan_codec::kMaxFrameBytes;
   c.queue_depth = 1;
   return c;
 }
@@ -141,12 +119,19 @@ int run_sink(const Options& o) {
   std::atomic<bool> invalid{false};
   std::uint64_t last_seq = 0; // callback worker only
   const auto started = sink.start([&](robotcore::Message message) {
-    if (!valid_encoded(message) || message.sequence <= last_seq) {
+    try {
+      const Scan scan = robotcore_ros::scan_codec::decode(message.payload);
+      if (!valid_scan(scan) ||
+          message.sequence != static_cast<std::uint64_t>(scan.intensities[0]) ||
+          message.sequence <= last_seq) {
+        invalid = true;
+        return;
+      }
+      last_seq = message.sequence;
+      ++count;
+    } catch (const std::exception&) {
       invalid = true;
-      return;
     }
-    last_seq = message.sequence;
-    ++count;
   });
   if (!started) throw std::runtime_error("sink start: " + started.detail);
   const auto deadline = std::chrono::steady_clock::now() + 20s;
@@ -170,9 +155,14 @@ int run_bridge(const Options& o, int argc, char** argv) {
       kScanTopic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
       [&](Scan::ConstSharedPtr scan) {
         if (!valid_scan(*scan)) { ++failed; return; }
-        const auto seq = static_cast<std::uint64_t>(scan->intensities[0]);
-        if (!sender.publish({seq, encode_ranges(*scan)})) { ++failed; return; }
-        ++forwarded;
+        try {
+          const auto seq = static_cast<std::uint64_t>(scan->intensities[0]);
+          const auto frame = robotcore_ros::scan_codec::encode(*scan);
+          if (!sender.publish({seq, frame})) { ++failed; return; }
+          ++forwarded;
+        } catch (const std::exception&) {
+          ++failed;
+        }
       });
   (void)subscriber; // keep subscriber alive while spinning
   rclcpp::spin(node);
