@@ -243,7 +243,16 @@ int run(int argc, char** argv) {
     while (running && rclcpp::ok())
       executor.spin_some(std::chrono::milliseconds(10));
   });
-  const int result = sampler.run();
+  int result = 1;
+  try {
+    result = sampler.run();
+  } catch (...) {
+    running = false;
+    executor_thread.join();
+    executor.remove_node(node);
+    transport.stop();
+    throw;
+  }
   running = false;
   executor_thread.join();
   executor.remove_node(node);

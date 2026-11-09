@@ -12,6 +12,7 @@ jobs:
           python-version: '3.12'
       - run: python3 -m unittest discover -s tests -v
       - run: bash -n scripts/run_benchmarks.sh
+      - run: bash -n scripts/run_comparison.sh
   ros-build:
     runs-on: ubuntu-24.04
     container:
@@ -32,12 +33,13 @@ jobs:
       - name: Cross-process DDS benchmark functional smoke (not performance evidence)
         shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          ros2 run robotcore_baseline transport_bench_dds --role responder --payload-bytes 128 > /tmp/rc-dds-server.log 2>&1 &
+          set -u
+          ./install/robotcore_baseline/lib/robotcore_baseline/transport_bench_dds --role responder --payload-bytes 128 > /tmp/rc-dds-server.log 2>&1 &
           responder=$!
           trap 'kill "$responder" 2>/dev/null || true; wait "$responder" 2>/dev/null || true' EXIT
           sleep 3
-          timeout 45s ros2 run robotcore_baseline transport_bench_dds --role initiator --payload-bytes 128 --samples 30 --warmup 15 --timeout-ms 2000 --run-id ci-dds --csv /tmp/rc-dds.csv
+          timeout 45s ./install/robotcore_baseline/lib/robotcore_baseline/transport_bench_dds --role initiator --payload-bytes 128 --samples 30 --warmup 15 --timeout-ms 2000 --run-id ci-dds --csv /tmp/rc-dds.csv
           test "$(wc -l < /tmp/rc-dds.csv)" -eq 31

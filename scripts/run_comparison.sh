@@ -39,7 +39,9 @@ done
  cmake -S robotcore_transports/ipc -B build/comparison-ipc -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
  cmake --build build/comparison-ipc --parallel
 )
+set +u
 source "$ROOT/install/setup.bash"
+set -u
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="$ROOT/results/raw/comparison-$STAMP"
 REPORT="$ROOT/results/reports/comparison-$STAMP"
@@ -79,7 +81,7 @@ for ((run=1; run<=RUNS; ++run)); do
   for payload in $PAYLOADS; do
     for mode in "${transports[@]}"; do
       if [[ "$mode" == dds ]]; then
-        cmd=(ros2 run robotcore_baseline transport_bench_dds)
+        cmd=("$ROOT/install/robotcore_baseline/lib/robotcore_baseline/transport_bench_dds")
       else
         cmd=("$ROOT/build/comparison-ipc/transport_bench_ipc")
       fi
