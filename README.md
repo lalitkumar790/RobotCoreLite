@@ -5,7 +5,7 @@
 ## Mission
 Evaluate whether alternative local communication transports can reduce ROS 2 node communication overhead while preserving correctness, reliability, and integration usability. **No speedup is claimed.**
 
-## Implemented: Phase 1 DDS baseline, Phase 2 API, Phase 3 initial Linux IPC
+## Implemented foundations: DDS baseline, transport API, Linux IPC and initial POSIX shared memory
 - ROS 2 C++ ping/pong executables with sequence IDs and monotonic RTT timing
 - ROS-independent C++17 Transport interface, explicit DDS fallback and payload validation
 - ROS 2 DDS adapter implementing the interface and a functional in-process smoke executable
@@ -51,16 +51,16 @@ ctest --test-dir build/ipc --output-on-failure
 ```
 This validates functional framing, sequencing and lifecycle; it does **not** measure IPC speed. See [IPC design and limitations](docs/ipc-transport.md).
 
-### Common DDS versus IPC benchmark harness
-The two executables compile the same stop-and-wait C++ test implementation. For Ubuntu 24.04 and Jazzy:
+### Common DDS, IPC and shared-memory benchmark harness
+All three executables compile the same stop-and-wait C++ test implementation; the shared-memory candidate has one slot per direction and uses payload copies. For Ubuntu 24.04 and Jazzy:
 ```bash
 source /opt/ros/jazzy/setup.bash
 bash scripts/run_comparison.sh
 ```
-The runner builds Release binaries, alternates order between repetitions, records raw CSV and host metadata, and writes a summary report. **No benchmark result is included in the repository.** The CI smoke checks are functional only; see [comparison methodology](docs/comparison-methodology.md).
+The runner builds Release binaries, rotates transport order between repetitions, records raw CSV and host metadata, and writes a summary report. **No benchmark result is included in the repository.** The CI smoke checks are functional only; see [comparison methodology](docs/comparison-methodology.md).
 
 ### Phase 4: bounded POSIX shared memory (initial)
-Linux POSIX shared memory now has a single-server/single-client C++ Transport implementation with two directional, bounded slots. Its process-shared semaphores synchronize reuse; each receive owns a copied payload. It does not yet implement persistent buffer reuse, general crash recovery or production multi-client support.
+Linux POSIX shared memory now has a single-server/single-client C++ Transport implementation with two directional, bounded slots. Its process-shared semaphores synchronize reuse; each receive owns a copied payload. It reuses its two slots during each session, but does not yet implement a **distinct persistent shared-memory transport mode**, general crash recovery or production multi-client support. Single-client attachment is enforced and abrupt-server-exit leftovers are rejected rather than silently overwritten.
 
 ```bash
 cmake -S robotcore_transports/shared_memory -B build/shm -DCMAKE_BUILD_TYPE=Debug
@@ -74,7 +74,7 @@ See [shared-memory design](docs/shared-memory.md). Successful functional tests a
 1. Measure baseline DDS under controlled conditions.
 2. Introduce transport abstraction and explicit configuration.
 3. Add optimized IPC, bounded framing and failure handling (initial implementation; hardening pending).
-4. Add shared memory and persistent buffer ownership, cleanup and concurrent access tests.
+4. Validate the initial bounded shared-memory implementation and design a distinct persistent shared-memory mode with robust ownership, cleanup and concurrent access tests.
 5. Compare against ROS 2 baseline and available ROS 2 shared-memory/loaning options fairly.
 6. Release raw data, plots, reproducibility notes, sensor workload demo and technical report.
 
