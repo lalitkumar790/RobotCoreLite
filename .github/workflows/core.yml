@@ -1,6 +1,7 @@
 name: Core API CI
 on:
   push:
+    branches: [main]
   pull_request:
 jobs:
   core-api:
