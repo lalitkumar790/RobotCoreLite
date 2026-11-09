@@ -65,8 +65,11 @@ static void server_loss(bool kill_server) {
   assert(client.publish({21, {1, 2, 3}}));
   assert(eventually([&] { return replied.load(); }));
   if (kill_server) {
-    ::close(stop_pipe[1]);
+    // Keep the control pipe open until SIGKILL is delivered. Closing its
+    // writer first would unblock read() with EOF and race with _exit(5),
+    // turning this deterministic crash injection into a flaky test.
     assert(::kill(child, SIGKILL) == 0);
+    ::close(stop_pipe[1]);
   } else {
     assert(::write(stop_pipe[1], "s", 1) == 1);
     ::close(stop_pipe[1]);

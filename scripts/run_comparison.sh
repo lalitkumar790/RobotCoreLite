@@ -17,7 +17,22 @@ TIMEOUT_MS="$(printenv TIMEOUT_MS || echo 1000)"
 DISCOVERY_TIMEOUT_MS="$(printenv DISCOVERY_TIMEOUT_MS || echo 15000)"
 MAX_RUN_SECS="$(printenv MAX_RUN_SECS || echo 180)"
 PROFILE_PERIOD_MS="$(printenv PROFILE_PERIOD_MS || echo 100)"
+PAYLOADS_FROM_ENV="$(printenv PAYLOADS || true)"
 PAYLOADS="$(printenv PAYLOADS || echo '64 1024 65536')"
+PAYLOAD_PROFILE="$(printenv PAYLOAD_PROFILE || echo uniform)"
+case "$PAYLOAD_PROFILE" in
+  uniform) ;;
+  laser360) shape_bytes=1440 ;;
+  gray_image_vga) shape_bytes=307200 ;;
+  depth16_vga) shape_bytes=614400 ;;
+  *) echo "Unknown PAYLOAD_PROFILE: $PAYLOAD_PROFILE" >&2; exit 1 ;;
+esac
+if [[ "$PAYLOAD_PROFILE" != uniform ]]; then
+  if [[ -n "$PAYLOADS_FROM_ENV" && "$PAYLOADS_FROM_ENV" != "$shape_bytes" ]]; then
+    echo "PAYLOADS must equal $shape_bytes for $PAYLOAD_PROFILE" >&2; exit 1
+  fi
+  PAYLOADS="$shape_bytes"
+fi
 RELIABILITY="$(printenv RELIABILITY || echo reliable)"
 QOS_DEPTH="$(printenv QOS_DEPTH || echo 1)"
 for value in "$RUNS" "$SAMPLES" "$WARMUP" "$TIMEOUT_MS" "$DISCOVERY_TIMEOUT_MS" "$MAX_RUN_SECS" "$QOS_DEPTH" "$PROFILE_PERIOD_MS"; do
@@ -58,7 +73,7 @@ REPORT="$ROOT/results/reports/comparison-$STAMP"
 mkdir -p "$OUT" "$REPORT"
 SOCKDIR="$(mktemp -d "${TMPDIR:-/tmp}/robotcore-compare.XXXXXX")"
 SOCKET="$SOCKDIR/transport.sock"
-SHM_NAME="/robotcore-compare-${STAMP}-$"
+SHM_NAME="/robotcore-compare-${STAMP}-$$"
 PSHM_NAME="/robotcore-persistent-compare-${STAMP}-$$"
 manager=""
 responder=""
@@ -88,7 +103,7 @@ trap finish EXIT
   printf 'compiler=%s\n' "$(c++ --version | head -1)"
   printf 'git_sha=%s\n' "$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo unknown)"
   printf 'build_type=Release\nruns=%s\nsamples=%s\nwarmup=%s\n' "$RUNS" "$SAMPLES" "$WARMUP"
-  printf 'payloads=%s\ntimeout_ms=%s\ndiscovery_timeout_ms=%s\nmax_run_secs=%s\n' "$PAYLOADS" "$TIMEOUT_MS" "$DISCOVERY_TIMEOUT_MS" "$MAX_RUN_SECS"
+  printf 'payloads=%s\npayload_profile=%s\ntimeout_ms=%s\ndiscovery_timeout_ms=%s\nmax_run_secs=%s\n' "$PAYLOADS" "$PAYLOAD_PROFILE" "$TIMEOUT_MS" "$DISCOVERY_TIMEOUT_MS" "$MAX_RUN_SECS"
   printf 'reliability=%s\nqos_depth=%s\nprofile_period_ms=%s\n' "$RELIABILITY" "$QOS_DEPTH" "$PROFILE_PERIOD_MS"
   if command -v dpkg-query >/dev/null; then
     dpkg-query -W "ros-$EXPECTED-rclcpp" "ros-$EXPECTED-rmw-*" 2>/dev/null || true
@@ -112,9 +127,9 @@ for ((run=1; run<=RUNS; ++run)); do
       else
         cmd=("$ROOT/build/comparison-persistent/transport_bench_persistent_shm")
       fi
-      label="${STAMP}_${mode}_${payload}_r${run}"
+      label="${STAMP}_${mode}_${PAYLOAD_PROFILE}_${payload}_r${run}"
       csv="$OUT/$label.csv"
-      common=(--payload-bytes "$payload" --qos-depth "$QOS_DEPTH" --reliability "$RELIABILITY")
+      common=(--payload-profile "$PAYLOAD_PROFILE" --payload-bytes "$payload" --qos-depth "$QOS_DEPTH" --reliability "$RELIABILITY")
       extra=()
       if [[ "$mode" == ipc ]]; then extra=(--socket "$SOCKET"); fi
       if [[ "$mode" == shared_memory ]]; then extra=(--shm-name "$SHM_NAME"); fi
