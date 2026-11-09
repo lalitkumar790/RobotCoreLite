@@ -33,3 +33,6 @@ The example path is illustrative and must be changed to a private directory belo
 
 ## Validation scope
 The test forks **before** starting transport threads, exchanges sequenced binary messages in two distinct processes, checks replies and oversize-payload rejection, rejects duplicate endpoint ownership, and verifies cleanup/restart. No published microsecond claims are implied. Follow-up work: malformed-frame injection, fuzzing, cancellation under load, process-crash recovery, multi-client design, and controlled DDS-vs-IPC benchmark runs.
+
+## Fault-injection validation
+CI now tests idle-server cancellation before any client connects and injects malformed raw socket frames (truncated header, invalid magic, length above the allowed limit, bad checksum and short payload). These must never dispatch application callbacks; tests do not measure performance. The server accept worker polls at bounded intervals to ensure stop does not rely on Linux-specific listening-socket shutdown behavior.

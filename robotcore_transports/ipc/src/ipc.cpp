@@ -3,6 +3,8 @@
 #include <cerrno>
 #include <chrono>
 #include <cstring>
+#include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
@@ -110,8 +112,32 @@ Status UnixSocketTransport::start(ReceiveCallback callback) {
 
 void UnixSocketTransport::run() {
   if (server_) {
-    const int fd = ::accept4(listener_, nullptr, nullptr, SOCK_CLOEXEC);
-    if (fd < 0 || !running_) { if (fd >= 0) ::close(fd); return; }
+    // Poll in bounded intervals: shutdown(listening_socket) does not reliably
+    // unblock a blocking accept() on every Linux environment.
+    int fd = -1;
+    while (running_) {
+      pollfd wait_for_client{};
+      wait_for_client.fd = listener_;
+      wait_for_client.events = POLLIN;
+      const int ready = ::poll(&wait_for_client, 1, 100);
+      if (ready < 0 && errno == EINTR) continue;
+      if (ready < 0) break;
+      if (ready == 0) continue;
+      if (!running_ || (wait_for_client.revents & (POLLERR | POLLHUP | POLLNVAL))) break;
+      if (!(wait_for_client.revents & POLLIN)) continue;
+      fd = ::accept4(listener_, nullptr, nullptr, SOCK_CLOEXEC | SOCK_NONBLOCK);
+      if (fd < 0 && (errno == EAGAIN || errno == EINTR)) continue;
+      break;
+    }
+    if (fd < 0 || !running_) {
+      if (fd >= 0) ::close(fd);
+      running_ = false;
+      return;
+    }
+    // accept4 was nonblocking to avoid racing readiness with cancellation.
+    // Restore blocking semantics for existing read_all and send timeout.
+    const int flags = ::fcntl(fd, F_GETFL);
+    if (flags >= 0) ::fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
     set_timeout(fd);
     peer_ = fd;
   }
