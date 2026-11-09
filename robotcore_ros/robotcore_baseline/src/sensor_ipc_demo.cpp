@@ -157,8 +157,8 @@ public:
   explicit ScanSource(std::uint64_t samples, std::uint64_t period_ms,
                       std::string events_csv)
     : rclcpp::Node("robotcore_scan_source"), limit_(samples), period_ms_(period_ms),
-      ready_deadline_(std::chrono::steady_clock::now() + 15s),
-      events_csv_(std::move(events_csv)) {
+      events_csv_(std::move(events_csv)),
+      ready_deadline_(std::chrono::steady_clock::now() + 15s) {
     if (!events_csv_.empty()) events_.reserve(limit_);
     publisher_ = create_publisher<Scan>(
         kScanTopic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
