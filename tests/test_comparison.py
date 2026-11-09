@@ -23,6 +23,14 @@ class ComparisonAnalyzerTests(unittest.TestCase):
             self.assertAlmostEqual(result["loss_rate"], 1 / 3)
             self.assertEqual(percentile([80, 120], 95), 118.0)
 
+    def test_resource_observations_do_not_enter_rtt_analysis(self):
+        with tempfile.TemporaryDirectory() as folder:
+            resource = pathlib.Path(folder) / "fixture.resources.csv"
+            resource.write_text(
+                "elapsed_ms,role,pid,start_ticks,cpu_user_seconds,cpu_system_seconds,rss_kib\n"
+                "0,responder,100,999,0.0,0.0,2048\n")
+            self.assertEqual(analyze(folder), [])
+
     def test_empty_directory(self):
         with tempfile.TemporaryDirectory() as folder:
             self.assertEqual(analyze(folder), [])

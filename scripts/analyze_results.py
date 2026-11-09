@@ -19,6 +19,9 @@ def percentile(sorted_data, p):
 def analyze(folder):
     results = []
     for path in sorted(pathlib.Path(folder).rglob('*.csv')):
+        # Resource samples are a separate observation stream, not RTT rows.
+        if path.name.endswith('.resources.csv'):
+            continue
         with path.open(newline='') as f:
             rows = list(csv.DictReader(f))
         if not rows:
