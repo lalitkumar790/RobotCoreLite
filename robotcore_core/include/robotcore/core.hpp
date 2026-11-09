@@ -72,6 +72,12 @@ inline std::pair<Status, TransportKind> resolve_transport(const Configuration& c
     return {Status::failure(Error::invalid_argument,
                             "shared memory requires reliable=true and queue_depth=1"), c.transport};
   }
+  if (c.transport == TransportKind::persistent_shared_memory) {
+    if (c.queue_depth == 1 && c.reliable)
+      return {Status::success(), c.transport};
+    return {Status::failure(Error::invalid_argument,
+                            "persistent shared memory requires reliable=true and queue_depth=1"), c.transport};
+  }
   if (c.allow_dds_fallback) return {Status::success(), TransportKind::dds};
   return {Status::failure(Error::unsupported, "requested transport is not implemented"), c.transport};
 }

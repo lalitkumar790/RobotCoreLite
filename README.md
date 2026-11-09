@@ -70,6 +70,18 @@ ctest --test-dir build/shm --output-on-failure --repeat until-fail:20
 
 See [shared-memory design](docs/shared-memory.md). Successful functional tests are not latency measurements.
 
+### Persistent shared memory (manager-owned region, experimental)
+
+A distinct fourth transport has a region manager that keeps a bounded POSIX mapping alive across endpoint sessions. The manager explicitly starts new sessions with increasing epochs and resets abandoned synchronization only after verifying previous processes are gone. Endpoints are limited to one server and client per epoch, with owned receive copies (not zero-copy).
+
+```bash
+cmake -S robotcore_transports/persistent_shm -B build/pshm -DCMAKE_BUILD_TYPE=Debug
+cmake --build build/pshm --parallel
+ctest --test-dir build/pshm --output-on-failure
+```
+
+See [persistent SHM design and limitations](docs/persistent-shm-design.md). The fourth mode is **not** yet integrated into the common comparison runner.
+
 ### Research plan
 1. Measure baseline DDS under controlled conditions.
 2. Introduce transport abstraction and explicit configuration.
