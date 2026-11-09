@@ -29,7 +29,7 @@ struct Region {
   std::uint32_t magic;
   std::uint32_t ready;
   std::uint32_t capacity;
-  std::uint32_t reserved;
+  std::uint32_t client_claim;
   Slot slots[2];
 };
 std::uint8_t* bytes(Region* region, int slot) {
@@ -136,6 +136,14 @@ Status SharedMemoryTransport::start(ReceiveCallback callback) {
       release_resources();
       return Status::failure(Error::io_error, "incompatible or uninitialized region");
     }
+    // Enforce one client. A crashed client leaves the claim set: fail closed.
+    std::uint32_t expected = 0;
+    if (!__atomic_compare_exchange_n(&region->client_claim, &expected, 1u,
+                                     false, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+      release_resources();
+      return Status::failure(Error::already_started, "client already attached");
+    }
+    owns_client_claim_ = true;
   }
   callback_ = std::move(callback);
   running_ = true;
@@ -207,6 +215,11 @@ void SharedMemoryTransport::receive_loop() {
 
 void SharedMemoryTransport::release_resources() {
   if (mapping_) {
+    if (owns_client_claim_) {
+      auto* region = static_cast<Region*>(mapping_);
+      __atomic_store_n(&region->client_claim, 0u, __ATOMIC_RELEASE);
+      owns_client_claim_ = false;
+    }
     ::munmap(mapping_, mapping_size_);
     mapping_ = nullptr;
   }

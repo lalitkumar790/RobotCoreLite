@@ -29,5 +29,6 @@ private:
   void* mapping_{nullptr};
   std::size_t mapping_size_{0};
   bool owns_name_{false};
+  bool owns_client_claim_{false};
 };
 } // namespace robotcore
