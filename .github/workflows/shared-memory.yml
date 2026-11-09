@@ -1,6 +1,7 @@
 name: Shared Memory Transport CI
 on:
   push:
+    branches: [main]
   pull_request:
 jobs:
   shared-memory:

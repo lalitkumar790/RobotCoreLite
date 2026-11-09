@@ -1,6 +1,7 @@
 name: Persistent Shared Memory CI
 on:
   push:
+    branches: [main]
   pull_request:
 jobs:
   persistent:
