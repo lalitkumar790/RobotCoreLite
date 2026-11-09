@@ -82,6 +82,16 @@ ctest --test-dir build/pshm --output-on-failure
 
 See [persistent SHM design and limitations](docs/persistent-shm-design.md). The fourth mode is integrated into the common comparison runner for **RTT functional validation**. The runner starts a fresh region manager per measured trial, so it does **not** measure warm-restart allocation savings.
 
+### Persistent manager setup-cost experiment
+
+The persistent SHM module also provides a **separate** cold-create versus warm-epoch-reset microbenchmark (not RTT, not robotics throughput). Run on a controlled Linux host:
+
+```bash
+bash scripts/run_persistent_setup.sh
+```
+
+It builds Release mode, records raw paired setup times and machine metadata, and writes a descriptive report. The operations deliberately differ; they are **not** an end-to-end apples-to-apples latency comparison. See [setup study design](docs/persistent-shm-design.md).
+
 ### Research plan
 1. Measure baseline DDS under controlled conditions.
 2. Introduce transport abstraction and explicit configuration.

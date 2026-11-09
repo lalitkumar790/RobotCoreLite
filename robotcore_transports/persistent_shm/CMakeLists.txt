@@ -24,3 +24,7 @@ add_executable(transport_bench_persistent_shm ../../benchmarks/latency/transport
 target_compile_definitions(transport_bench_persistent_shm PRIVATE ROBOTCORE_BENCH_PSHM)
 target_link_libraries(transport_bench_persistent_shm PRIVATE robotcore_persistent_shm)
 target_compile_options(transport_bench_persistent_shm PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_executable(persistent_region_setup ../../benchmarks/setup/persistent_region_setup.cpp)
+target_link_libraries(persistent_region_setup PRIVATE robotcore_persistent_shm)
+target_compile_options(persistent_region_setup PRIVATE -Wall -Wextra -Wpedantic -Werror)

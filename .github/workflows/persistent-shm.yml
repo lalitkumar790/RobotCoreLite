@@ -45,3 +45,10 @@ jobs:
           kill "$manager"
           wait "$manager"
           trap - EXIT
+      - name: Setup-cost experiment functional smoke (not performance evidence)
+        run: |
+          set -euo pipefail
+          ./build/pshm/persistent_region_setup --samples 8 --warmup 2 --capacity 64 --csv /tmp/rc-pshm-setup.csv
+          test "$(wc -l < /tmp/rc-pshm-setup.csv)" -eq 17
+          python3 scripts/analyze_persistent_setup.py /tmp/rc-pshm-setup.csv /tmp/rc-pshm-setup.md
+          test -s /tmp/rc-pshm-setup.md
