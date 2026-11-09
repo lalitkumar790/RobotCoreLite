@@ -41,3 +41,14 @@ A separate test suite kills a running **manager process** after the client and s
 Additional fault tests inject an oversized length, a stale generation tag and a mismatched integrity hash into the server's inbound slot. A receiver that finds any of these rejects the frame **without invoking the application callback** and marks the whole session poisoned (`ready=2`). The other endpoint can then detect session closure rather than filling an abandoned slot. Only an explicit manager `begin_session()` can reset the poisoned semaphores, after the previous endpoints are stopped. These tests cover selected failure paths; they are not fuzzing or proof of full crash consistency.
 
 The `RCP1` wire-layout magic has not changed because the added behavior uses its existing `ready` flag; manager and transport processes must use compatible binaries. The FNV-1a hash protects accidental integrity errors only, not malicious tampering. The manager still has no automatic resurrection or authenticated remote control.
+
+## Isolated setup-cost benchmark (not transport RTT)
+
+The `persistent_region_setup` executable measures two deliberately different manager operations with `steady_clock`: (1) cold `start()` plus the first `begin_session()` (POSIX mapping creation, initialization and first epoch), and (2) an additional `begin_session()` **on that same mapping** (warm synchronization reset, no region allocation). It records each observed pair in CSV after warmup. The companion Python analyzer rejects duplicate or incomplete pairs and generates descriptive means/medians and minimum/maximum timings. The repeatable runner builds Release binaries and writes environment metadata.
+
+```bash
+bash scripts/run_persistent_setup.sh
+# Environment options: SAMPLES=1000 WARMUP=50 CAPACITY=1024
+```
+
+CI tests only compilation, the smoke CSV schema and report generation. Neither a fast warm reset nor a ratio of the two operations demonstrates improved communication latency: the operations are intentionally different, there are no endpoints and no message RTT, and OS page cache, allocator state, scheduling and frequency scaling remain confounders. A valid claim about lifecycle benefits requires multi-session endpoint startup tests on dedicated controlled machines, with raw data and resource metrics retained.
