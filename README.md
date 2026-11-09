@@ -99,11 +99,11 @@ The native Linux IPC, shared-memory and persistent-shared-memory test suites are
 
 Sanitizer checks test selected memory/undefined-behavior paths; they do **not** prove thread-race freedom, crash-safe automatic recovery, or real-time determinism. ThreadSanitizer, multi-process fuzzing, and controlled physical-host benchmarks remain future work.
 
-### Native ROS 2 LaserScan → IPC demo (functional integration)
+### Native ROS 2 LaserScan → IPC / shared memory demos (functional integration)
 
-A separate `sensor_ipc_demo` uses a native ROS 2 `sensor_msgs/msg/LaserScan` publisher, a typed ROS 2 bridge into optimized Unix-socket IPC, and an independent sink that reconstructs and validates the **complete LaserScan message** (stamp, frame ID, geometry, ranges, and intensities) using a bounded versioned ROS 2 CDR envelope. The scan data is **generated**, not hardware-captured. A dedicated `scan_codec_test` covers exact field roundtrips and malformed envelopes; CI launches three processes and validates 20 frames.
+Three binaries compile the **same typed ROS 2 `sensor_msgs/msg/LaserScan` CDR bridge** for optimized Unix IPC, bounded shared memory and persistent shared memory. Each runs a generated ROS 2 publisher, typed ROS 2 subscriber, and independent native sink that reconstructs and validates the complete scan metadata and measurements. Persistent mode adds an independently owned region manager that must outlive both endpoints. CI tests the complete CDR codec plus three-process and four-process delivery paths (20 IPC frames, 50 frames for each SHM variant). See [native ROS sensor demo](docs/native-ros-sensor-demo.md).
 
-This is **not** a real-robot latency measurement, a security-hardened CDR decoder, or proof that IPC outperforms DDS. The demo currently targets optimized IPC only; DDS baseline and other transports have separate functional benchmarks. See [demo scope](docs/native-ros-sensor-demo.md).
+This is **not** a real-robot latency measurement, a security-hardened CDR decoder, or proof that IPC outperforms DDS. The demo uses all three native Linux transports; the ROS 2 DDS baseline has separate functional benchmarks. No physical sensor or full robotics control-loop measurements have been made. See [demo scope](docs/native-ros-sensor-demo.md).
 
 ### Research plan
 1. Measure baseline DDS under controlled conditions.

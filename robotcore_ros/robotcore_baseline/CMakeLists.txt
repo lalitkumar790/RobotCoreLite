@@ -42,6 +42,40 @@ target_link_libraries(sensor_ipc_demo robotcore_sensor_demo_ipc Threads::Threads
 ament_target_dependencies(sensor_ipc_demo rclcpp sensor_msgs)
 target_compile_options(sensor_ipc_demo PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
+# Full native LaserScan CDR integration over both shared-memory transports.
+# The same source compiles into all three typed bridge executables.
+add_library(robotcore_sensor_demo_shm STATIC
+  ../../robotcore_transports/shared_memory/src/shared_memory.cpp)
+target_include_directories(robotcore_sensor_demo_shm PUBLIC
+  ../../robotcore_transports/shared_memory/include
+  ../../robotcore_core/include)
+target_compile_features(robotcore_sensor_demo_shm PUBLIC cxx_std_17)
+target_link_libraries(robotcore_sensor_demo_shm PUBLIC Threads::Threads)
+target_compile_options(robotcore_sensor_demo_shm PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_library(robotcore_sensor_demo_persistent STATIC
+  ../../robotcore_transports/persistent_shm/src/persistent_shm.cpp)
+target_include_directories(robotcore_sensor_demo_persistent PUBLIC
+  ../../robotcore_transports/persistent_shm/include
+  ../../robotcore_core/include)
+target_compile_features(robotcore_sensor_demo_persistent PUBLIC cxx_std_17)
+target_link_libraries(robotcore_sensor_demo_persistent PUBLIC Threads::Threads)
+target_compile_options(robotcore_sensor_demo_persistent PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_executable(sensor_shm_demo src/sensor_ipc_demo.cpp)
+target_compile_definitions(sensor_shm_demo PRIVATE ROBOTCORE_SENSOR_SHM)
+target_include_directories(sensor_shm_demo PRIVATE include)
+target_link_libraries(sensor_shm_demo robotcore_sensor_demo_shm Threads::Threads)
+ament_target_dependencies(sensor_shm_demo rclcpp sensor_msgs)
+target_compile_options(sensor_shm_demo PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_executable(sensor_persistent_shm_demo src/sensor_ipc_demo.cpp)
+target_compile_definitions(sensor_persistent_shm_demo PRIVATE ROBOTCORE_SENSOR_PSHM)
+target_include_directories(sensor_persistent_shm_demo PRIVATE include)
+target_link_libraries(sensor_persistent_shm_demo robotcore_sensor_demo_persistent Threads::Threads)
+ament_target_dependencies(sensor_persistent_shm_demo rclcpp sensor_msgs)
+target_compile_options(sensor_persistent_shm_demo PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
 # Execute actual ROS 2 CDR encode/decode tests with the Jazzy type support.
 add_executable(scan_codec_test src/scan_codec_test.cpp)
 target_include_directories(scan_codec_test PRIVATE include)
@@ -49,6 +83,6 @@ ament_target_dependencies(scan_codec_test rclcpp sensor_msgs)
 target_compile_options(scan_codec_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 install(TARGETS dds_pingpong dds_adapter_smoke transport_bench_dds
-  sensor_ipc_demo scan_codec_test DESTINATION lib/${PROJECT_NAME})
+  sensor_ipc_demo sensor_shm_demo sensor_persistent_shm_demo scan_codec_test DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 ament_package()
