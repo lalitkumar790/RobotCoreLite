@@ -19,6 +19,7 @@ public:
   TransportKind kind() const noexcept override { return TransportKind::shared_memory; }
 private:
   void receive_loop();
+  bool owner_alive() const;
   void release_resources();
   std::string name_;
   bool server_;
@@ -30,5 +31,6 @@ private:
   std::size_t mapping_size_{0};
   bool owns_name_{false};
   bool owns_client_claim_{false};
+  int owner_pidfd_{-1};
 };
 } // namespace robotcore
