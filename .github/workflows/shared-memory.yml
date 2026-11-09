@@ -14,3 +14,17 @@ jobs:
       - name: Repeat cross-process SHM tests
         run: |
           ctest --test-dir build/shm --output-on-failure --repeat until-fail:20
+      - name: Cross-process SHM benchmark smoke (no performance claims)
+        run: |
+          set -euo pipefail
+          name="/robotcore-ci-shm-$$"
+          ./build/shm/transport_bench_shm --role responder --shm-name "$name" --qos-depth 1 --payload-bytes 128 > /tmp/rc-shm-server.log 2>&1 &
+          responder=$!
+          trap 'kill "$responder" 2>/dev/null || true; wait "$responder" 2>/dev/null || true' EXIT
+          for n in $(seq 1 100); do
+            [[ -e "/dev/shm/${name#/}" ]] && break
+            sleep 0.05
+          done
+          test -e "/dev/shm/${name#/}"
+          timeout 30s ./build/shm/transport_bench_shm --role initiator --shm-name "$name" --qos-depth 1 --payload-bytes 128 --samples 30 --warmup 10 --timeout-ms 1000 --run-id ci-shm --csv /tmp/rc-shm.csv
+          test "$(wc -l < /tmp/rc-shm.csv)" -eq 31

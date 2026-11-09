@@ -7,8 +7,10 @@
 #include <rclcpp/rclcpp.hpp>
 #elif defined(ROBOTCORE_BENCH_IPC)
 #include "robotcore/ipc.hpp"
+#elif defined(ROBOTCORE_BENCH_SHM)
+#include "robotcore/shared_memory.hpp"
 #else
-#error "Select ROBOTCORE_BENCH_DDS or ROBOTCORE_BENCH_IPC"
+#error "Select DDS, IPC or SHM benchmark backend"
 #endif
 #include <atomic>
 #include <chrono>
@@ -37,6 +39,7 @@ struct Options {
   std::string csv;
   std::string run_id{"manual"};
   std::string socket_path;
+  std::string shm_name;
   std::uint64_t samples{1000};
   std::uint64_t warmup{100};
   std::uint64_t timeout_ms{1000};
@@ -65,6 +68,7 @@ Options parse(int argc, char** argv) {
     else if (key == "--csv") opts.csv = val;
     else if (key == "--run-id") opts.run_id = val;
     else if (key == "--socket") opts.socket_path = val;
+    else if (key == "--shm-name") opts.shm_name = val;
     else if (key == "--samples") opts.samples = positive_integer(val, key, 1, 10000000);
     else if (key == "--warmup") opts.warmup = positive_integer(val, key, 1, 1000000);
     else if (key == "--timeout-ms") opts.timeout_ms = positive_integer(val, key, 1, 60000);
@@ -84,6 +88,10 @@ Options parse(int argc, char** argv) {
 #if defined(ROBOTCORE_BENCH_IPC)
   if (opts.socket_path.empty()) throw std::invalid_argument("--socket required for IPC");
   if (!opts.reliable) throw std::invalid_argument("IPC does not implement best_effort");
+#elif defined(ROBOTCORE_BENCH_SHM)
+  if (opts.shm_name.empty()) throw std::invalid_argument("--shm-name required for SHM");
+  if (!opts.reliable || opts.qos_depth != 1)
+    throw std::invalid_argument("SHM requires reliable=true and queue_depth=1");
 #endif
   if (opts.role == "initiator" && opts.csv.empty())
     throw std::invalid_argument("--csv required for initiator");
@@ -128,8 +136,10 @@ public:
     if (!out) throw std::runtime_error("cannot create CSV: " + opts_.csv);
 #if defined(ROBOTCORE_BENCH_DDS)
     constexpr const char* transport_name = "dds";
-#else
+#elif defined(ROBOTCORE_BENCH_IPC)
     constexpr const char* transport_name = "ipc";
+#else
+    constexpr const char* transport_name = "shared_memory";
 #endif
     out << "run_id,transport,seq,payload_bytes,status,rtt_us,rtt_half_proxy_us\n";
     std::uint64_t successes = 0, timeouts = 0;
@@ -220,8 +230,10 @@ int run(int argc, char** argv) {
   robotcore::Configuration config;
 #if defined(ROBOTCORE_BENCH_DDS)
   config.transport = robotcore::TransportKind::dds;
-#else
+#elif defined(ROBOTCORE_BENCH_IPC)
   config.transport = robotcore::TransportKind::ipc;
+#else
+  config.transport = robotcore::TransportKind::shared_memory;
 #endif
   config.max_payload_bytes = opts.payload_bytes;
   config.queue_depth = opts.qos_depth;
@@ -237,9 +249,12 @@ int run(int argc, char** argv) {
   robotcore_ros::DdsTransport transport(node,
     responder ? "robotcore/compare/reply" : "robotcore/compare/request",
     responder ? "robotcore/compare/request" : "robotcore/compare/reply", config);
-#else
+#elif defined(ROBOTCORE_BENCH_IPC)
   const bool responder = opts.role == "responder";
   robotcore::UnixSocketTransport transport(opts.socket_path, responder, config);
+#else
+  const bool responder = opts.role == "responder";
+  robotcore::SharedMemoryTransport transport(opts.shm_name, responder, config);
 #endif
 
   if (responder) {

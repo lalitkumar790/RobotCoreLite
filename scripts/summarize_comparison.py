@@ -10,11 +10,11 @@ from collections import defaultdict
 def render(records):
     groups = defaultdict(list)
     for r in records:
-        if r["transport"] in ("dds", "ipc"):
+        if r["transport"] in ("dds", "ipc", "shared_memory"):
             groups[(int(r["payload_bytes"]), r["transport"])].append(r)
     payloads = sorted({payload for payload, _ in groups})
     lines = [
-        "# Observed DDS and IPC RTT results (descriptive only)",
+        "# Observed DDS, IPC and SHM RTT results (descriptive only)",
         "",
         "All values below summarize **measured, successful round-trip times**. "
         "They do not establish one-way latency, delivery guarantees, or statistical superiority.",
@@ -28,7 +28,7 @@ def render(records):
     def fmt(value):
         return f"{value:.2f}" if value is not None else "N/A"
     for payload in payloads:
-        for mode in ("dds", "ipc"):
+        for mode in ("dds", "ipc", "shared_memory"):
             runs = groups.get((payload, mode), [])
             means = sorted(r["mean_rtt_us"] for r in runs if r["mean_rtt_us"] is not None)
             p95s = sorted(r["p95_rtt_us"] for r in runs if r["p95_rtt_us"] is not None)
@@ -42,15 +42,15 @@ def render(records):
                 f"{fmt(statistics.median(means)) if means else 'N/A'} | "
                 f"{spread} | {fmt(statistics.median(p95s)) if p95s else 'N/A'} |"
             )
-        if len(groups.get((payload, "dds"), [])) < 3 or len(groups.get((payload, "ipc"), [])) < 3:
+        if any(len(groups.get((payload, mode), [])) < 3 for mode in ("dds", "ipc", "shared_memory")):
             lines.append("")
-            lines.append(f"Payload {payload}: fewer than three runs for one or both transports; "
+            lines.append(f"Payload {payload}: fewer than three runs for at least one transport; "
                          "insufficient repetition even for a preliminary comparison.")
             lines.append("")
     if not payloads:
         lines.append("| — | — | 0 | 0/0 | N/A | N/A | N/A | N/A |")
         lines.append("")
-        lines.append("No valid DDS/IPC runs were found.")
+        lines.append("No valid DDS/IPC/SHM runs were found.")
     lines.extend([
         "",
         "**Interpretation:** Medians across runs describe variability but are not confidence "

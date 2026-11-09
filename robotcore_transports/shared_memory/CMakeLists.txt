@@ -14,3 +14,8 @@ if(BUILD_TESTING)
   add_test(NAME shared_memory_cross_process COMMAND shared_memory_test)
   set_tests_properties(shared_memory_cross_process PROPERTIES TIMEOUT 20)
 endif()
+
+add_executable(transport_bench_shm ../../benchmarks/latency/transport_benchmark.cpp)
+target_compile_definitions(transport_bench_shm PRIVATE ROBOTCORE_BENCH_SHM)
+target_link_libraries(transport_bench_shm PRIVATE robotcore_shared_memory)
+target_compile_options(transport_bench_shm PRIVATE -Wall -Wextra -Wpedantic -Werror)

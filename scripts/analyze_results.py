@@ -26,7 +26,7 @@ def analyze(folder):
         run_id = rows[0]['run_id']
         transport = rows[0].get('transport', 'dds_legacy')
         payload = int(rows[0]['payload_bytes'])
-        if transport not in ('dds', 'ipc', 'dds_legacy'):
+        if transport not in ('dds', 'ipc', 'shared_memory', 'dds_legacy'):
             raise ValueError(f'Unknown transport in {path}: {transport}')
         if any(r['run_id'] != run_id or
                r.get('transport', 'dds_legacy') != transport or

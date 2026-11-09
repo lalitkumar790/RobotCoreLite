@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Controlled cross-process DDS-versus-IPC runner. CI smoke is not research evidence.
+# Controlled cross-process DDS/IPC/SHM runner. CI smoke is not research evidence.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EXPECTED="$(printenv EXPECTED_ROS_DISTRO || echo jazzy)"
@@ -18,7 +18,7 @@ DISCOVERY_TIMEOUT_MS="$(printenv DISCOVERY_TIMEOUT_MS || echo 15000)"
 MAX_RUN_SECS="$(printenv MAX_RUN_SECS || echo 180)"
 PAYLOADS="$(printenv PAYLOADS || echo '64 1024 65536')"
 RELIABILITY="$(printenv RELIABILITY || echo reliable)"
-QOS_DEPTH="$(printenv QOS_DEPTH || echo 10)"
+QOS_DEPTH="$(printenv QOS_DEPTH || echo 1)"
 for value in "$RUNS" "$SAMPLES" "$WARMUP" "$TIMEOUT_MS" "$DISCOVERY_TIMEOUT_MS" "$MAX_RUN_SECS" "$QOS_DEPTH"; do
   if [[ ! "$value" =~ ^[1-9][0-9]*$ ]]; then
     echo "RUNS/SAMPLES/WARMUP/TIMEOUT_MS/MAX_RUN_SECS/QOS_DEPTH must be positive integers" >&2
@@ -26,9 +26,10 @@ for value in "$RUNS" "$SAMPLES" "$WARMUP" "$TIMEOUT_MS" "$DISCOVERY_TIMEOUT_MS" 
   fi
 done
 if [[ "$RELIABILITY" != "reliable" ]]; then
-  echo "IPC only implements reliable stream delivery. Set RELIABILITY=reliable." >&2
+  echo "IPC/SHM comparison requires RELIABILITY=reliable." >&2
   exit 1
 fi
+if [[ "$QOS_DEPTH" != "1" ]]; then echo "All compared modes require QOS_DEPTH=1" >&2; exit 1; fi
 for payload in $PAYLOADS; do
   if [[ ! "$payload" =~ ^[1-9][0-9]*$ ]] || (( payload > 16777216 )); then
     echo "Invalid payload: $payload" >&2; exit 1
@@ -39,6 +40,8 @@ done
  colcon build --base-paths robotcore_ros --packages-select robotcore_baseline --cmake-args -DCMAKE_BUILD_TYPE=Release
  cmake -S robotcore_transports/ipc -B build/comparison-ipc -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
  cmake --build build/comparison-ipc --parallel
+ cmake -S robotcore_transports/shared_memory -B build/comparison-shm -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+ cmake --build build/comparison-shm --parallel
 )
 set +u
 source "$ROOT/install/setup.bash"
@@ -49,6 +52,7 @@ REPORT="$ROOT/results/reports/comparison-$STAMP"
 mkdir -p "$OUT" "$REPORT"
 SOCKDIR="$(mktemp -d "${TMPDIR:-/tmp}/robotcore-compare.XXXXXX")"
 SOCKET="$SOCKDIR/transport.sock"
+SHM_NAME="/robotcore-compare-${STAMP}-$$"
 responder=""
 cleanup() {
   if [[ -n "$responder" ]]; then
@@ -78,28 +82,37 @@ trap finish EXIT
   fi
 } > "$OUT/environment.txt"
 for ((run=1; run<=RUNS; ++run)); do
-  if (( run % 2 == 0 )); then transports=(ipc dds); else transports=(dds ipc); fi
+  case $((run % 3)) in
+    1) transports=(dds ipc shared_memory) ;;
+    2) transports=(ipc shared_memory dds) ;;
+    0) transports=(shared_memory dds ipc) ;;
+  esac
   for payload in $PAYLOADS; do
     for mode in "${transports[@]}"; do
       if [[ "$mode" == dds ]]; then
         cmd=("$ROOT/install/robotcore_baseline/lib/robotcore_baseline/transport_bench_dds")
-      else
+      elif [[ "$mode" == ipc ]]; then
         cmd=("$ROOT/build/comparison-ipc/transport_bench_ipc")
+      else
+        cmd=("$ROOT/build/comparison-shm/transport_bench_shm")
       fi
       label="${STAMP}_${mode}_${payload}_r${run}"
       csv="$OUT/$label.csv"
       common=(--payload-bytes "$payload" --qos-depth "$QOS_DEPTH" --reliability "$RELIABILITY")
       extra=()
       if [[ "$mode" == ipc ]]; then extra=(--socket "$SOCKET"); fi
+      if [[ "$mode" == shared_memory ]]; then extra=(--shm-name "$SHM_NAME"); fi
       "${cmd[@]}" --role responder "${common[@]}" "${extra[@]}" > "$OUT/$label.server.log" 2>&1 &
       responder=$!
       if [[ "$mode" == dds ]]; then sleep 3; else
         for ((i=0; i<100; ++i)); do
-          [[ -S "$SOCKET" ]] && break
+          if [[ "$mode" == ipc && -S "$SOCKET" ]]; then break; fi
+          if [[ "$mode" == shared_memory && -e "/dev/shm/${SHM_NAME#/}" ]]; then break; fi
           sleep 0.05
         done
-        if [[ ! -S "$SOCKET" ]]; then
-          echo "IPC server failed to bind: $OUT/$label.server.log" >&2; exit 1
+        if [[ "$mode" == ipc && ! -S "$SOCKET" ]] ||
+           [[ "$mode" == shared_memory && ! -e "/dev/shm/${SHM_NAME#/}" ]]; then
+          echo "Local transport server failed to bind: $OUT/$label.server.log" >&2; exit 1
         fi
       fi
       if ! kill -0 "$responder" 2>/dev/null; then
