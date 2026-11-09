@@ -36,8 +36,10 @@ constexpr const char* kBackendName = "persistent_shared_memory";
 constexpr const char* kBackendName = "ipc";
 #endif
 
+#if defined(ROBOTCORE_SENSOR_PSHM)
 volatile std::sig_atomic_t manager_stop_signal = 0;
 void request_manager_stop(int) { manager_stop_signal = 1; }
+#endif
 
 float generated_range(std::size_t angle, std::uint64_t seq) {
   return 1.0f + static_cast<float>((angle + seq) % 100u) * 0.01f;
