@@ -3,7 +3,7 @@
 # Functional test only: not a benchmark or evidence of latency advantage.
 set -euo pipefail
 if (( $# < 1 || $# > 3 )); then
-  echo "usage: test_ros_sensor_bridge.sh dds|ipc|shm|persistent_shm [frames] [period_ms]" >&2
+  echo "usage: test_ros_sensor_bridge.sh dds|dds_bridge|ipc|shm|persistent_shm [frames] [period_ms]" >&2
   exit 2
 fi
 mode="$1"
@@ -18,6 +18,10 @@ fi
 case "$mode" in
   dds)
     binary="sensor_dds_demo"
+    flag=""
+    endpoint="" ;;
+  dds_bridge)
+    binary="sensor_dds_bridge_demo"
     flag=""
     endpoint="" ;;
   ipc)
@@ -43,6 +47,15 @@ if [[ ! -x "$bin" ]]; then
   exit 1
 fi
 logdir="$(mktemp -d /tmp/robotcore-native-XXXXXX)"
+# Set SENSOR_EVENTS_DIR to retain monotonic source/sink observations.
+events_dir="${SENSOR_EVENTS_DIR:-}"
+source_events=()
+sink_events=()
+if [[ -n "$events_dir" ]]; then
+  mkdir -p "$events_dir"
+  source_events=(--events-csv "$events_dir/source_events.csv")
+  sink_events=(--events-csv "$events_dir/sink_events.csv")
+fi
 sink=""
 bridge=""
 source_pid=""
@@ -75,22 +88,22 @@ if [[ "$mode" == persistent_shm ]]; then
     exit 1
   fi
 fi
-if [[ "$mode" == dds ]]; then
-  "$bin" --role sink --samples "$frames" --period-ms "$period_ms" > "$logdir/sink.log" 2>&1 &
+if [[ "$mode" == dds || "$mode" == dds_bridge ]]; then
+  "$bin" --role sink --samples "$frames" --period-ms "$period_ms" "${sink_events[@]}" > "$logdir/sink.log" 2>&1 &
 else
-  "$bin" --role sink "$flag" "$endpoint" --samples "$frames" --period-ms "$period_ms" > "$logdir/sink.log" 2>&1 &
+  "$bin" --role sink "$flag" "$endpoint" --samples "$frames" --period-ms "$period_ms" "${sink_events[@]}" > "$logdir/sink.log" 2>&1 &
 fi
 sink=$!
 for i in $(seq 1 100); do
-  if [[ "$mode" == dds ]] && kill -0 "$sink" 2>/dev/null; then break; fi
+  if [[ "$mode" == dds || "$mode" == dds_bridge ]] && kill -0 "$sink" 2>/dev/null; then break; fi
   if [[ "$mode" == ipc && -S "$endpoint" ]]; then break; fi
-  if [[ "$mode" != ipc && "$mode" != dds && -e "$shm_file" ]]; then break; fi
+  if [[ "$mode" == shm || "$mode" == persistent_shm ]] && [[ -e "$shm_file" ]]; then break; fi
   if ! kill -0 "$sink" 2>/dev/null; then break; fi
   sleep 0.05
 done
 endpoint_ready=true
 case "$mode" in
-  dds) kill -0 "$sink" 2>/dev/null || endpoint_ready=false ;;
+  dds|dds_bridge) kill -0 "$sink" 2>/dev/null || endpoint_ready=false ;;
   ipc) [[ -S "$endpoint" ]] || endpoint_ready=false ;;
   *) [[ -e "$shm_file" ]] || endpoint_ready=false ;;
 esac
@@ -100,16 +113,33 @@ if [[ "$endpoint_ready" != true ]]; then
   exit 1
 fi
 if [[ "$mode" != dds ]]; then
-  "$bin" --role bridge "$flag" "$endpoint" --period-ms "$period_ms" > "$logdir/bridge.log" 2>&1 &
+  if [[ "$mode" == dds_bridge ]]; then
+    "$bin" --role bridge --period-ms "$period_ms" > "$logdir/bridge.log" 2>&1 &
+  else
+    "$bin" --role bridge "$flag" "$endpoint" --period-ms "$period_ms" > "$logdir/bridge.log" 2>&1 &
+  fi
   bridge=$!
 fi
-sleep 2
+if [[ "$mode" == dds_bridge ]]; then
+  for i in $(seq 1 160); do
+    grep -q '^bridge_ready=1$' "$logdir/bridge.log" && break
+    if ! kill -0 "$bridge" 2>/dev/null; then break; fi
+    sleep 0.05
+  done
+  if ! grep -q '^bridge_ready=1$' "$logdir/bridge.log"; then
+    echo "CDR DDS bridge did not match its sink:" >&2
+    cat "$logdir/bridge.log" >&2
+    exit 1
+  fi
+else
+  sleep 2
+fi
 if [[ "$mode" != dds ]] && ! kill -0 "$bridge" 2>/dev/null; then
   echo "Native scan bridge exited unexpectedly:" >&2
   cat "$logdir/bridge.log" >&2
   exit 1
 fi
-"$bin" --role source --samples "$frames" --period-ms "$period_ms" > "$logdir/source.log" 2>&1 &
+"$bin" --role source --samples "$frames" --period-ms "$period_ms" "${source_events[@]}" > "$logdir/source.log" 2>&1 &
 source_pid=$!
 if ! wait "$source_pid"; then
   echo "LaserScan publisher failed to emit all requested frames ($mode):" >&2
@@ -149,9 +179,22 @@ if [[ -n "$manager" ]]; then
   fi
   manager=""
 fi
-if [[ "$mode" != ipc && "$mode" != dds && -e "$shm_file" ]]; then
+if [[ "$mode" == shm || "$mode" == persistent_shm ]] && [[ -e "$shm_file" ]]; then
   echo "Shared-memory name was not released: $shm_file" >&2
   exit 1
+fi
+if [[ -n "$events_dir" ]]; then
+  python3 "$root/scripts/analyze_sensor_events.py" \
+    --source "$events_dir/source_events.csv" \
+    --sink "$events_dir/sink_events.csv" \
+    --expected "$frames" --mode "$mode" --period-ms "$period_ms" \
+    --output-dir "$events_dir"
+  {
+    printf 'mode=%s\nframes=%s\nrequested_period_ms=%s\n' "$mode" "$frames" "$period_ms"
+    printf 'kernel=%s\n' "$(uname -a)"
+    printf 'git_sha=%s\n' "$(git -C "$root" rev-parse HEAD 2>/dev/null || echo unknown)"
+    printf 'measurement_kind=application_visible_pre_publish_to_sink_callback_entry\n'
+  } > "$events_dir/environment.txt"
 fi
 cat "$logdir/sink.log"
 echo "transport=$mode full_laserscan_frames=$frames period_ms=$period_ms valid=1"

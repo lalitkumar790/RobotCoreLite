@@ -77,23 +77,37 @@ jobs:
           source install/setup.bash
           timeout 65s bash scripts/test_ros_sensor_bridge.sh dds 250 10
 
+      - name: Matched-topology DDS CDR bridge with raw per-frame observations
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          SENSOR_EVENTS_DIR=/tmp/rc-typed-dds-bridge timeout 75s bash scripts/test_ros_sensor_bridge.sh dds_bridge 250 10
+          test -s /tmp/rc-typed-dds-bridge/source_events.csv
+          test -s /tmp/rc-typed-dds-bridge/sink_events.csv
+          test -s /tmp/rc-typed-dds-bridge/paired_events.csv
+          python3 -c "import json; s=json.load(open('/tmp/rc-typed-dds-bridge/summary.json')); assert s['complete_contiguous_delivery'] and s['sink_frames'] == 250"
+
       - name: Strict complete native LaserScan sequence over Unix IPC
         shell: bash
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          timeout 65s bash scripts/test_ros_sensor_bridge.sh ipc 250 10
+          SENSOR_EVENTS_DIR=/tmp/rc-typed-ipc timeout 65s bash scripts/test_ros_sensor_bridge.sh ipc 250 10
+          test -s /tmp/rc-typed-ipc/paired_events.csv
 
       - name: Strict complete native LaserScan sequence over bounded SHM
         shell: bash
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          timeout 65s bash scripts/test_ros_sensor_bridge.sh shm 250 10
+          SENSOR_EVENTS_DIR=/tmp/rc-typed-shm timeout 65s bash scripts/test_ros_sensor_bridge.sh shm 250 10
+          test -s /tmp/rc-typed-shm/paired_events.csv
 
       - name: Strict complete native LaserScan sequence over persistent SHM
         shell: bash
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          timeout 65s bash scripts/test_ros_sensor_bridge.sh persistent_shm 250 10
+          SENSOR_EVENTS_DIR=/tmp/rc-typed-persistent timeout 65s bash scripts/test_ros_sensor_bridge.sh persistent_shm 250 10
+          test -s /tmp/rc-typed-persistent/paired_events.csv

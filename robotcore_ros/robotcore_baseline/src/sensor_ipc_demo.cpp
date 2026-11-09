@@ -1,7 +1,9 @@
 // Full native LaserScan -> versioned CDR -> selectable RobotCore-Lite transport.
 // Three OS processes (plus a separate region manager for persistent SHM).
 // Functional typed integration, not a latency or throughput benchmark.
-#if defined(ROBOTCORE_SENSOR_DDS)
+#if defined(ROBOTCORE_SENSOR_DDS_BRIDGE)
+#include <std_msgs/msg/u_int8_multi_array.hpp>
+#elif defined(ROBOTCORE_SENSOR_DDS)
 // This mode uses native ROS 2 typed publication and subscription directly.
 #elif defined(ROBOTCORE_SENSOR_SHM)
 #include "robotcore/shared_memory.hpp"
@@ -20,18 +22,46 @@
 #include <cmath>
 #include <cstdint>
 #include <iostream>
+#include <fstream>
 #include <memory>
 #include <stdexcept>
 #include <string>
 #include <thread>
 #include <vector>
+#include <utility>
 
 namespace {
 using Scan = sensor_msgs::msg::LaserScan;
 using namespace std::chrono_literals;
 constexpr std::size_t kReadings = 360;
 constexpr const char* kScanTopic = "/robotcore/native_scan";
-#if defined(ROBOTCORE_SENSOR_DDS)
+
+struct Event {
+  std::uint64_t sequence;
+  std::int64_t monotonic_ns;
+};
+std::int64_t monotonic_ns() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(
+      std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+// Buffer event records in memory and write once after worker/executor stops,
+// keeping disk I/O out of the publication and receive callbacks.
+void write_events(const std::string& csv, const std::vector<Event>& events) {
+  if (csv.empty()) return;
+  std::ofstream output(csv, std::ios::trunc);
+  if (!output) throw std::runtime_error("cannot open event CSV: " + csv);
+  output << "sequence,monotonic_ns\n";
+  for (const auto& e : events)
+    output << e.sequence << ',' << e.monotonic_ns << '\n';
+  output.flush();
+  if (!output) throw std::runtime_error("failed to write event CSV: " + csv);
+}
+#if defined(ROBOTCORE_SENSOR_DDS_BRIDGE)
+constexpr const char* kForwardedTopic = "/robotcore/forwarded_scan_cdr";
+#endif
+#if defined(ROBOTCORE_SENSOR_DDS_BRIDGE)
+constexpr const char* kBackendName = "dds_cdr_bridge";
+#elif defined(ROBOTCORE_SENSOR_DDS)
 constexpr const char* kBackendName = "dds_native";
 #elif defined(ROBOTCORE_SENSOR_SHM)
 constexpr const char* kBackendName = "shared_memory";
@@ -76,6 +106,7 @@ struct Options {
   std::string endpoint;
   std::uint64_t samples{20};
   std::uint64_t period_ms{20};
+  std::string events_csv;
 };
 Options parse(int argc, char** argv) {
   Options o;
@@ -84,6 +115,7 @@ Options parse(int argc, char** argv) {
     const std::string key = argv[i], value = argv[i + 1];
     if (key == "--role") o.role = value;
     else if (key == "--socket" || key == "--shm-name") o.endpoint = value;
+    else if (key == "--events-csv") o.events_csv = value;
     else if (key == "--period-ms") {
       if (value.empty() || value[0] == '-')
         throw std::invalid_argument("period-ms must be a positive integer");
@@ -113,7 +145,7 @@ Options parse(int argc, char** argv) {
     throw std::invalid_argument("role must be source, bridge or sink");
 #endif
 #endif
-#if !defined(ROBOTCORE_SENSOR_DDS)
+#if !defined(ROBOTCORE_SENSOR_DDS) && !defined(ROBOTCORE_SENSOR_DDS_BRIDGE)
   if (o.role != "source" && o.endpoint.empty())
     throw std::invalid_argument("endpoint path or SHM name is required");
 #endif
@@ -122,9 +154,12 @@ Options parse(int argc, char** argv) {
 
 class ScanSource final : public rclcpp::Node {
 public:
-  explicit ScanSource(std::uint64_t samples, std::uint64_t period_ms)
+  explicit ScanSource(std::uint64_t samples, std::uint64_t period_ms,
+                      std::string events_csv)
     : rclcpp::Node("robotcore_scan_source"), limit_(samples), period_ms_(period_ms),
-      ready_deadline_(std::chrono::steady_clock::now() + 15s) {
+      ready_deadline_(std::chrono::steady_clock::now() + 15s),
+      events_csv_(std::move(events_csv)) {
+    if (!events_csv_.empty()) events_.reserve(limit_);
     publisher_ = create_publisher<Scan>(
         kScanTopic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
     timer_ = create_wall_timer(std::chrono::milliseconds(period_ms_), [this] {
@@ -151,19 +186,24 @@ public:
       scan.ranges.reserve(kReadings);
       for (std::size_t i = 0; i < kReadings; ++i)
         scan.ranges.push_back(generated_range(i, sequence_));
+      const auto stamp = monotonic_ns();  // immediately before ROS publish
       publisher_->publish(scan);
+      if (!events_csv_.empty()) events_.push_back({sequence_, stamp});
       ++sequence_;
     });
   }
   std::uint64_t published_count() const noexcept { return sequence_ - 1; }
+  void flush_events() const { write_events(events_csv_, events_); }
 private:
   std::uint64_t sequence_{1}, limit_, period_ms_;
+  std::string events_csv_;
+  std::vector<Event> events_;
   std::chrono::steady_clock::time_point ready_deadline_;
   rclcpp::Publisher<Scan>::SharedPtr publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
-#if !defined(ROBOTCORE_SENSOR_DDS)
+#if !defined(ROBOTCORE_SENSOR_DDS) && !defined(ROBOTCORE_SENSOR_DDS_BRIDGE)
 robotcore::Configuration sensor_transport_config() {
   robotcore::Configuration c;
 #if defined(ROBOTCORE_SENSOR_SHM)
@@ -215,7 +255,7 @@ int run_manager(const Options& o) {
 #endif  // Native transports
 
 int run_sink(const Options& o) {
-#if defined(ROBOTCORE_SENSOR_DDS)
+#if defined(ROBOTCORE_SENSOR_DDS) || defined(ROBOTCORE_SENSOR_DDS_BRIDGE)
   rclcpp::init(0, nullptr);
   auto node = std::make_shared<rclcpp::Node>("robotcore_dds_scan_sink");
 #else
@@ -223,29 +263,50 @@ int run_sink(const Options& o) {
 #endif
   std::atomic<std::uint64_t> count{0};
   std::atomic<bool> invalid{false};
+  std::vector<Event> observed;
+  if (!o.events_csv.empty()) observed.reserve(o.samples);
   robotcore_ros::StrictScanSequence tracker(o.samples);  // callback thread only
-  auto check_scan = [&](const Scan& scan, std::uint64_t seq) {
+  auto check_scan = [&](const Scan& scan, std::uint64_t seq,
+                        std::int64_t arrival_ns) {
     if (!valid_scan(scan, o.period_ms) ||
         seq != static_cast<std::uint64_t>(scan.intensities[0]) ||
         !tracker.accept(seq)) {
       invalid = true;
       return;
     }
+    if (!o.events_csv.empty()) observed.push_back({seq, arrival_ns});
     ++count;
   };
-#if defined(ROBOTCORE_SENSOR_DDS)
+#if defined(ROBOTCORE_SENSOR_DDS_BRIDGE)
+  auto subscriber = node->create_subscription<std_msgs::msg::UInt8MultiArray>(
+      kForwardedTopic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
+      [&](std_msgs::msg::UInt8MultiArray::ConstSharedPtr packet) {
+        const auto received_ns = monotonic_ns();
+        try {
+          const Scan scan = robotcore_ros::scan_codec::decode(packet->data);
+          const auto seq = static_cast<std::uint64_t>(
+              scan.intensities.empty() ? 0.0f : scan.intensities[0]);
+          check_scan(scan, seq, received_ns);
+        } catch (const std::exception&) {
+          invalid = true;
+        }
+      });
+  (void)subscriber;
+#elif defined(ROBOTCORE_SENSOR_DDS)
   auto subscriber = node->create_subscription<Scan>(
       kScanTopic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
       [&](Scan::ConstSharedPtr scan) {
+        const auto received_ns = monotonic_ns();
         check_scan(*scan, static_cast<std::uint64_t>(
-            scan->intensities.empty() ? 0.0f : scan->intensities[0]));
+            scan->intensities.empty() ? 0.0f : scan->intensities[0]), received_ns);
       });
   (void)subscriber;
 #else
   const auto started = sink->start([&](robotcore::Message message) {
+    const auto received_ns = monotonic_ns();
     try {
       const Scan scan = robotcore_ros::scan_codec::decode(message.payload);
-      check_scan(scan, message.sequence);
+      check_scan(scan, message.sequence, received_ns);
     } catch (const std::exception&) {
       invalid = true;
     }
@@ -256,25 +317,65 @@ int run_sink(const Options& o) {
       std::chrono::milliseconds(o.samples * o.period_ms + 15000);
   while (count.load() < o.samples && !invalid &&
          std::chrono::steady_clock::now() < deadline) {
-#if defined(ROBOTCORE_SENSOR_DDS)
+#if defined(ROBOTCORE_SENSOR_DDS) || defined(ROBOTCORE_SENSOR_DDS_BRIDGE)
     rclcpp::spin_some(node);
     std::this_thread::sleep_for(1ms);
 #else
     std::this_thread::sleep_for(2ms);
 #endif
   }
-#if defined(ROBOTCORE_SENSOR_DDS)
+#if defined(ROBOTCORE_SENSOR_DDS) || defined(ROBOTCORE_SENSOR_DDS_BRIDGE)
   rclcpp::shutdown();
 #else
   const auto result = sink->stop();
   if (!result) throw std::runtime_error("sink stop: " + result.detail);
 #endif
+  write_events(o.events_csv, observed);
   std::cout << "validated_native_scan_frames=" << count.load()
             << " expected=" << o.samples
             << " invalid=" << invalid.load() << '\n';
   return !invalid && count == o.samples ? 0 : 2;
 }
-#if !defined(ROBOTCORE_SENSOR_DDS)
+#if defined(ROBOTCORE_SENSOR_DDS_BRIDGE)
+int run_bridge(const Options& o, int argc, char** argv) {
+  rclcpp::init(argc, argv);
+  auto node = std::make_shared<rclcpp::Node>("robotcore_scan_cdr_dds_bridge");
+  auto publisher = node->create_publisher<std_msgs::msg::UInt8MultiArray>(
+      kForwardedTopic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
+  std::atomic<std::uint64_t> forwarded{0}, failed{0};
+  std::atomic<bool> ready{false};
+  auto subscriber = node->create_subscription<Scan>(
+      kScanTopic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
+      [&](Scan::ConstSharedPtr scan) {
+        if (!valid_scan(*scan, o.period_ms) || !ready.load()) {
+          ++failed;
+          return;
+        }
+        try {
+          std_msgs::msg::UInt8MultiArray packet;
+          packet.data = robotcore_ros::scan_codec::encode(*scan);
+          publisher->publish(packet);
+          ++forwarded;
+        } catch (const std::exception&) {
+          ++failed;
+        }
+      });
+  (void)subscriber;
+  // Prevent the source from publishing before the second DDS hop is matched.
+  // The runner observes this marker before launching the source.
+  auto readiness = node->create_wall_timer(50ms, [&] {
+    if (!ready && publisher->get_subscription_count() != 0) {
+      ready = true;
+      std::cout << "bridge_ready=1" << std::endl;
+    }
+  });
+  (void)readiness;
+  rclcpp::spin(node);
+  rclcpp::shutdown();
+  std::cout << "bridge_forwarded=" << forwarded << " errors=" << failed << '\n';
+  return failed ? 2 : 0;
+}
+#elif !defined(ROBOTCORE_SENSOR_DDS)
 int run_bridge(const Options& o, int argc, char** argv) {
   auto sender = make_transport(o, false);
   const auto started = sender->start([](robotcore::Message) {});
@@ -306,10 +407,11 @@ int run_bridge(const Options& o, int argc, char** argv) {
 #endif
 int run_source(const Options& o, int argc, char** argv) {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<ScanSource>(o.samples, o.period_ms);
+  auto node = std::make_shared<ScanSource>(o.samples, o.period_ms, o.events_csv);
   rclcpp::spin(node);
   const auto sent = node->published_count();
   rclcpp::shutdown();
+  node->flush_events();
   std::cout << "published_native_scan_frames=" << sent << " expected=" << o.samples << '\n';
   return sent == o.samples ? 0 : 2;
 }
