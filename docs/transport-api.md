@@ -26,4 +26,4 @@ source install/setup.bash
 ros2 run robotcore_baseline dds_adapter_smoke
 ```
 
-**Still outstanding:** cross-process ROS API integration, persistent IPC, shared memory, concurrent callback semantics and full benchmark measurements.
+**Still outstanding:** cross-process ROS API integration, persistent shared-memory buffer reuse, multi-client delivery, crash-safe synchronization, concurrent callback lifecycle semantics and research-grade performance measurements. An initial bounded POSIX shared-memory candidate is available; its queue depth is fixed at one.

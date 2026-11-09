@@ -60,12 +60,18 @@ public:
 
 // Resolve requested transport explicitly. Unimplemented transports are
 // rejected unless the user has opted into DDS fallback. Never silently
-// claim that shared memory is operating.
+// claim that unavailable transports are operating.
 inline std::pair<Status, TransportKind> resolve_transport(const Configuration& c) {
   const auto validity = validate(c);
   if (!validity) return {validity, c.transport};
   if (c.transport == TransportKind::dds || c.transport == TransportKind::ipc)
     return {Status::success(), c.transport};
+  if (c.transport == TransportKind::shared_memory) {
+    if (c.queue_depth == 1 && c.reliable)
+      return {Status::success(), c.transport};
+    return {Status::failure(Error::invalid_argument,
+                            "shared memory requires reliable=true and queue_depth=1"), c.transport};
+  }
   if (c.allow_dds_fallback) return {Status::success(), TransportKind::dds};
   return {Status::failure(Error::unsupported, "requested transport is not implemented"), c.transport};
 }

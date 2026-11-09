@@ -1,0 +1,16 @@
+name: Shared Memory Transport CI
+on:
+  push:
+  pull_request:
+jobs:
+  shared-memory:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build transport with strict warnings
+        run: |
+          cmake -S robotcore_transports/shared_memory -B build/shm -DCMAKE_BUILD_TYPE=Debug
+          cmake --build build/shm --parallel
+      - name: Repeat cross-process SHM tests
+        run: |
+          ctest --test-dir build/shm --output-on-failure --repeat until-fail:20

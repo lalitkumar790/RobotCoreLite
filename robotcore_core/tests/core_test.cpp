@@ -45,7 +45,14 @@ int main() {
   assert(resolve_transport(c).first);
   assert(resolve_transport(c).second == TransportKind::ipc);
   c.transport = TransportKind::shared_memory;
-  assert(resolve_transport(c).second == TransportKind::dds);
+  assert(resolve_transport(c).first.error == Error::invalid_argument);
+  c.queue_depth = 1;
+  assert(resolve_transport(c).first);
+  assert(resolve_transport(c).second == TransportKind::shared_memory);
+  c.reliable = false;
+  assert(resolve_transport(c).first.error == Error::invalid_argument);
+  c.reliable = true;
+  c.queue_depth = 10;
   c.transport = TransportKind::persistent_shared_memory;
   assert(resolve_transport(c).second == TransportKind::dds);
   c.queue_depth = 0;
