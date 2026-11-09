@@ -92,6 +92,13 @@ bash scripts/run_persistent_setup.sh
 
 It builds Release mode, records raw paired setup times and machine metadata, and writes a descriptive report. The operations deliberately differ; they are **not** an end-to-end apples-to-apples latency comparison. See [setup study design](docs/persistent-shm-design.md).
 
+
+### Native sanitizer and partial-crash validation
+
+The native Linux IPC, shared-memory and persistent-shared-memory test suites are additionally compiled with Clang AddressSanitizer and UndefinedBehaviorSanitizer in GitHub Actions. The persistent-memory suite includes a deterministic child-process crash after acquiring a slot but before marking the frame ready, verifying manager reset is blocked while the writer is live and old work is not delivered after an explicit epoch reset.
+
+Sanitizer checks test selected memory/undefined-behavior paths; they do **not** prove thread-race freedom, crash-safe automatic recovery, or real-time determinism. ThreadSanitizer, multi-process fuzzing, and controlled physical-host benchmarks remain future work.
+
 ### Research plan
 1. Measure baseline DDS under controlled conditions.
 2. Introduce transport abstraction and explicit configuration.

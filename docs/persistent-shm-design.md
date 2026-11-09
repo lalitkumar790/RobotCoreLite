@@ -52,3 +52,9 @@ bash scripts/run_persistent_setup.sh
 ```
 
 CI tests only compilation, the smoke CSV schema and report generation. Neither a fast warm reset nor a ratio of the two operations demonstrates improved communication latency: the operations are intentionally different, there are no endpoints and no message RTT, and OS page cache, allocator state, scheduling and frequency scaling remain confounders. A valid claim about lifecycle benefits requires multi-session endpoint startup tests on dedicated controlled machines, with raw data and resource metrics retained.
+
+## Partial-write crash regression
+
+A separate crash-injection test attaches a real client in a child process, acquires the outbound `free` semaphore and writes an **uncommitted, incomplete slot header** without posting the `filled` semaphore. While the writer is alive, `PersistentRegionManager::begin_session()` must refuse to reset the region. The test kills the writer with `SIGKILL`, reaps the process, explicitly begins a new epoch, and verifies a subsequent request/reply does not deliver the abandoned frame.
+
+This checks one deliberately constructed crash window, **not** exhaustive crash consistency. It does not prove automatic recovery or correct behavior for every possible concurrent publish/stop interleaving.

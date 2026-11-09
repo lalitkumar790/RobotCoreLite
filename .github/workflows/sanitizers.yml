@@ -1,0 +1,28 @@
+name: Native Transport Sanitizers CI
+on:
+  push:
+  pull_request:
+jobs:
+  address-undefined:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        transport: [ipc, shared_memory, persistent_shm]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure Clang ASan and UBSan
+        run: |
+          command -v clang++
+          CC=clang CXX=clang++ cmake -S "robotcore_transports/${{ matrix.transport }}" \
+            -B "build/sanitized/${{ matrix.transport }}" \
+            -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTING=ON \
+            -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+      - name: Build instrumented native transport
+        run: cmake --build "build/sanitized/${{ matrix.transport }}" --parallel
+      - name: Run instrumented cross-process and fault tests
+        env:
+          ASAN_OPTIONS: detect_leaks=1:halt_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: ctest --test-dir "build/sanitized/${{ matrix.transport }}" --output-on-failure --repeat until-fail:3
