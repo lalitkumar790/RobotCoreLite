@@ -6,6 +6,8 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(sensor_msgs REQUIRED)
+find_package(Threads REQUIRED)
 
 add_executable(dds_pingpong src/dds_pingpong.cpp)
 ament_target_dependencies(dds_pingpong rclcpp std_msgs)
@@ -24,6 +26,22 @@ target_include_directories(transport_bench_dds PRIVATE include ../../robotcore_c
 ament_target_dependencies(transport_bench_dds rclcpp std_msgs)
 target_compile_options(transport_bench_dds PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-install(TARGETS dds_pingpong dds_adapter_smoke transport_bench_dds DESTINATION lib/${PROJECT_NAME})
+# Native ROS 2 sensor_msgs/LaserScan -> RobotCore-Lite IPC -> independent sink.
+# One source/bridge/sink executable with separate OS process roles.
+add_library(robotcore_sensor_demo_ipc STATIC ../../robotcore_transports/ipc/src/ipc.cpp)
+target_include_directories(robotcore_sensor_demo_ipc PUBLIC
+  ../../robotcore_transports/ipc/include
+  ../../robotcore_core/include)
+target_compile_features(robotcore_sensor_demo_ipc PUBLIC cxx_std_17)
+target_link_libraries(robotcore_sensor_demo_ipc PUBLIC Threads::Threads)
+target_compile_options(robotcore_sensor_demo_ipc PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+add_executable(sensor_ipc_demo src/sensor_ipc_demo.cpp)
+target_link_libraries(sensor_ipc_demo robotcore_sensor_demo_ipc Threads::Threads)
+ament_target_dependencies(sensor_ipc_demo rclcpp sensor_msgs)
+target_compile_options(sensor_ipc_demo PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+install(TARGETS dds_pingpong dds_adapter_smoke transport_bench_dds sensor_ipc_demo
+  DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 ament_package()
