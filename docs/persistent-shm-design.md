@@ -1,4 +1,4 @@
-# Persistent shared-memory design proposal — not implemented
+# Persistent shared-memory design and initial implementation
 
 ## Research question
 
@@ -26,10 +26,18 @@ The current SHM implementation already reuses two slots within one session, so c
 
 ## Current status
 
-**Design only.** The `persistent_shared_memory` transport kind remains unsupported and resolves to DDS only with an explicit fallback. No persistent-mode latency, throughput or zero-copy performance has been measured.
+The initial persistent SHM transport is implemented, using a separate manager and epoch-fenced shared region. Persistent pool/loan APIs and automatic manager-failure recovery are **not** implemented. No persistent-mode latency, throughput or zero-copy performance benefit has been established.
 
 ## Initial implementation — manager-controlled persistent epochs
 
 The dedicated `robotcore_transports/persistent_shm` C++ module now supplies `PersistentRegionManager` and `PersistentSharedMemoryTransport`. The manager creates and owns the POSIX named mapping independently of endpoint lifetimes, and `begin_session()` resets both slots and increments an epoch **only when no endpoint process from the previous session is alive**. Each server/client role may attach once per epoch; a separate process can act as the manager. Cross-process tests verify repeated sessions reuse the same mapped object (device and inode remain unchanged), and simulate a crashed client with a stale lease and potentially abandoned slot. The manager checks process PID plus start-time to prevent PID reuse false positives; stale messages are discarded at an explicit epoch reset. This is **not** transparent reconnection or zero-copy: endpoints copy payloads into and out of preallocated buffers, and the manager performs explicit recovery. Sessions require coordinated shutdown/restart of both roles. The manager rejects destruction while endpoints remain live.
 
 A future advanced mode still needs loan/return buffers, manager crash recovery, access-control hardening, multiple clients, and real-world measurements. Do not interpret initial functional correctness as a speedup.
+
+## Fault injection and manager death detection
+
+A separate test suite kills a running **manager process** after the client and server complete an echo. Both attached endpoints must fail closed on subsequent publish. The orphaned shared-memory name must not be silently adopted by another manager; only the test deliberately unlinks it after the manager is reaped and endpoints detach.
+
+Additional fault tests inject an oversized length, a stale generation tag and a mismatched integrity hash into the server's inbound slot. A receiver that finds any of these rejects the frame **without invoking the application callback** and marks the whole session poisoned (`ready=2`). The other endpoint can then detect session closure rather than filling an abandoned slot. Only an explicit manager `begin_session()` can reset the poisoned semaphores, after the previous endpoints are stopped. These tests cover selected failure paths; they are not fuzzing or proof of full crash consistency.
+
+The `RCP1` wire-layout magic has not changed because the added behavior uses its existing `ready` flag; manager and transport processes must use compatible binaries. The FNV-1a hash protects accidental integrity errors only, not malicious tampering. The manager still has no automatic resurrection or authenticated remote control.

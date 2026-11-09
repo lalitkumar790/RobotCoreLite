@@ -384,9 +384,22 @@ void PersistentSharedMemoryTransport::receive_loop() {
       if (good) message.payload.assign(ptr, ptr + count);
     }
     ::sem_post(&slot.free);
-    if (!good) { running_ = false; break; }
-    try { callback_(std::move(message)); }
-    catch (...) { running_ = false; break; }
+    if (!good) {
+      // Poison the whole session. If only the receiver stopped, other peers
+      // could continue enqueueing into an abandoned slot indefinitely.
+      // A manager may reset this region only after both leases are inactive.
+      __atomic_store_n(&region->ready, 2u, __ATOMIC_RELEASE);
+      running_ = false;
+      break;
+    }
+    try {
+      callback_(std::move(message));
+    } catch (...) {
+      // A crashing application callback invalidates the current session too.
+      __atomic_store_n(&region->ready, 2u, __ATOMIC_RELEASE);
+      running_ = false;
+      break;
+    }
   }
   running_ = false;
 }
