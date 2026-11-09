@@ -37,7 +37,7 @@ target_link_libraries(robotcore_sensor_demo_ipc PUBLIC Threads::Threads)
 target_compile_options(robotcore_sensor_demo_ipc PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 add_executable(sensor_ipc_demo src/sensor_ipc_demo.cpp)
-target_link_libraries(sensor_ipc_demo PRIVATE robotcore_sensor_demo_ipc Threads::Threads)
+target_link_libraries(sensor_ipc_demo robotcore_sensor_demo_ipc Threads::Threads)
 ament_target_dependencies(sensor_ipc_demo rclcpp sensor_msgs)
 target_compile_options(sensor_ipc_demo PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
