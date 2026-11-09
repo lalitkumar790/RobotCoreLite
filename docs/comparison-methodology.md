@@ -51,3 +51,18 @@ The persistent manager is terminated only after both initiator and responder exi
 The runner now writes `<run_id>.resources.csv` beside each RTT CSV, plus `resources.csv` and `resources.md` in the report directory. Samples use Linux `/proc/<pid>/stat` CPU counters, `statm` resident pages, PID and process-start-time checks, and timestamps from a monotonic clock. Processes are sampled at the **same observation instants** while the initiator is running; persistent SHM has an additional manager role. Responder and manager start before the window; their startup costs are therefore **not** included in these samples. A process may finish between samples, and sampled maximum RSS is not an exact peak. CPU "core equivalents" means the change in user+system CPU seconds divided by the *observed* time between that role's first and last sample, **not** a CPU percentage. Runs with fewer than two samples get no CPU-rate estimate.
 
 These measurements are not necessarily comparable to another machine, RMW implementation, DDS QoS configuration, or experiment with different process lifecycles. The sampler itself has overhead that can perturb short RTTs. Use dedicated hosts, long workloads, multiple repetitions and comparable observation windows before drawing performance conclusions. Raw data and environmental metadata should be published alongside any findings.
+
+## Deterministic synthetic robotics-shaped payload profiles
+
+The runner also supports `PAYLOAD_PROFILE=laser360`, `gray_image_vga`, or `depth16_vga` (default `uniform`). These profiles encode, respectively, 360 synthetic float32 range samples (1,440 bytes), a changing 640 × 480 single-channel uint8 image (307,200 bytes), and a changing 640 × 480 little-endian uint16 depth image (614,400 bytes). Frame bytes vary with the application sequence number, are generated **before** the RTT clock starts, and the initiator validates the full returned byte payload against that exact sequence. This is a deterministic *sensor-shaped byte workload*, **not** live sensor data, `sensor_msgs/LaserScan`, `sensor_msgs/Image`, DDS loaned messages, or a full perception/control pipeline. The DDS adapter continues using `std_msgs/UInt8MultiArray`.
+
+Examples (Ubuntu 24.04 / ROS 2 Jazzy):
+```bash
+source /opt/ros/jazzy/setup.bash
+RUNS=3 PAYLOAD_PROFILE=laser360 SAMPLES=1000 WARMUP=100 bash scripts/run_comparison.sh
+RUNS=3 PAYLOAD_PROFILE=gray_image_vga SAMPLES=1000 WARMUP=100 bash scripts/run_comparison.sh
+RUNS=3 PAYLOAD_PROFILE=depth16_vga SAMPLES=1000 WARMUP=100 bash scripts/run_comparison.sh
+```
+Each profile selects its exact application byte size. An explicit `PAYLOADS` must match that size; mixing profiles in the same summarized group is prohibited. Individual RTT CSV files include `payload_profile` alongside status. An incorrect full-payload echo is recorded as `invalid_payload` rather than incorrectly counted as a timeout; any such run exits unsuccessfully and must be investigated. A missing reply after the deadline is recorded as `timeout`, not verified packet loss.
+
+**Experimental caveat:** The synthetic frames change data and message sizes, but stop-and-wait RTT remains a single-in-flight workload. It is neither realistic sensor cadence nor throughput/load validation. Encoding work occurs before timestamping, while payload checking after callback arrival may affect inter-message pacing. Do not claim sensor integration or speedup based on these profiles alone.

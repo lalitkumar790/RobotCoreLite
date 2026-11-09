@@ -55,3 +55,11 @@ jobs:
           test -n "$(find results/reports -name comparison.md -size +0c -print -quit)"
           test -n "$(find results/reports -name resources.md -size +0c -print -quit)"
           test -n "$(find results/raw -name '*.resources.csv' -size +0c -print -quit)"
+      - name: Four-mode synthetic LiDAR frame smoke (not actual sensor_msgs)
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          RUNS=1 PAYLOAD_PROFILE=laser360 SAMPLES=12 WARMUP=5 TIMEOUT_MS=2000 MAX_RUN_SECS=60 \
+            bash scripts/run_comparison.sh
+          grep -rl 'laser360' results/reports/ | grep -q .
+

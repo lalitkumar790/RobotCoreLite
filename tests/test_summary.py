@@ -23,6 +23,14 @@ class SummaryTests(unittest.TestCase):
         self.assertIn("| 128 | persistent_shared_memory | 3 | 30/30 | 0.00% | 160.00 | 140.00–180.00 |", report)
         self.assertNotIn("insufficient repetition", report)
 
+    def test_different_payload_profiles_are_never_combined(self):
+        fixed = entry("ipc", "uniform", payload=1440, value=150)
+        sensor = entry("ipc", "lidar", payload=1440, value=200)
+        sensor["payload_profile"] = "laser360"
+        report = render([fixed, sensor])
+        self.assertIn("| uniform | 1440 | ipc | 1 |", report)
+        self.assertIn("| laser360 | 1440 | ipc | 1 |", report)
+
     def test_single_run_not_declared_conclusive(self):
         report = render([entry("ipc", "i", received=9)])
         self.assertIn("insufficient repetition", report)

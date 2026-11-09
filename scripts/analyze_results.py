@@ -28,32 +28,37 @@ def analyze(folder):
             continue
         run_id = rows[0]['run_id']
         transport = rows[0].get('transport', 'dds_legacy')
+        profile = rows[0].get('payload_profile', 'uniform')
         payload = int(rows[0]['payload_bytes'])
+        if profile not in ('uniform', 'laser360', 'gray_image_vga', 'depth16_vga'):
+            raise ValueError(f'Unknown payload profile in {path}: {profile}')
         if transport not in ('dds', 'ipc', 'shared_memory', 'persistent_shared_memory', 'dds_legacy'):
             raise ValueError(f'Unknown transport in {path}: {transport}')
         if any(r['run_id'] != run_id or
                r.get('transport', 'dds_legacy') != transport or
+               r.get('payload_profile', 'uniform') != profile or
                int(r['payload_bytes']) != payload for r in rows):
             raise ValueError(f'Inconsistent run metadata in {path}')
         sequences = [int(r['seq']) for r in rows]
         if len(sequences) != len(set(sequences)):
             raise ValueError(f'Duplicate sequence numbers in {path}')
         statuses = [r['status'] for r in rows]
-        if any(x not in ('ok', 'timeout') for x in statuses):
+        if any(x not in ('ok', 'timeout', 'invalid_payload') for x in statuses):
             raise ValueError(f'Unexpected status in {path}')
-        if any(r['rtt_us'].strip() for r in rows if r['status'] == 'timeout'):
-            raise ValueError(f'Timeouts must not contain RTT values in {path}')
+        if any(r['rtt_us'].strip() for r in rows if r['status'] != 'ok'):
+            raise ValueError(f'Failed replies must not contain RTT values in {path}')
         latencies = sorted(float(r['rtt_us']) for r in rows if r['status'] == 'ok')
         if not all(math.isfinite(x) and x >= 0 for x in latencies):
             raise ValueError(f'Invalid RTT in {path}')
         success = len(latencies)
         result = dict(file=str(path), run_id=rows[0]['run_id'],
-                      transport=rows[0].get('transport', 'dds_legacy'),
+                      transport=transport, payload_profile=profile,
                       payload_bytes=int(rows[0]['payload_bytes']),
                       attempted=len(rows), received=success,
-                      timed_out=len(rows) - success,
+                      timed_out=statuses.count('timeout'),
+                      invalid_payload=statuses.count('invalid_payload'),
                       loss_rate=(len(rows) - success) / len(rows),
-                      timeout_rate=(len(rows) - success) / len(rows),
+                      timeout_rate=statuses.count('timeout') / len(rows),
                       mean_rtt_us=statistics.mean(latencies) if latencies else None,
                       median_rtt_us=statistics.median(latencies) if latencies else None,
                       p95_rtt_us=percentile(latencies, 95),
@@ -79,11 +84,11 @@ def main(argv):
     lines = ['# Transport RTT report', '',
              'RTT is measured using one steady clock. RTT/2 is **not** measured one-way latency.',
              'Timeout is a missing reply in this benchmark, not necessarily network packet loss.', '',
-             '| Transport | Run | Bytes | Success / Attempts | Mean RTT (us) | P95 | P99 | Timeout rate |',
-             '|---|---|---:|---:|---:|---:|---:|---:|']
+             '| Transport | Profile | Run | Bytes | Success / Attempts | Invalid replies | Mean RTT (us) | P95 | P99 | Timeout rate |',
+             '|---|---|---|---:|---:|---:|---:|---:|---:|---:|']
     def fmt(v): return f'{v:.2f}' if v is not None else 'N/A'
     for r in results:
-        lines.append(f"| {r['transport']} | {r['run_id']} | {r['payload_bytes']} | {r['received']} / {r['attempted']} | {fmt(r['mean_rtt_us'])} | {fmt(r['p95_rtt_us'])} | {fmt(r['p99_rtt_us'])} | {r['loss_rate']:.2%} |")
+        lines.append(f"| {r['transport']} | {r['payload_profile']} | {r['run_id']} | {r['payload_bytes']} | {r['received']} / {r['attempted']} | {r['invalid_payload']} | {fmt(r['mean_rtt_us'])} | {fmt(r['p95_rtt_us'])} | {fmt(r['p99_rtt_us'])} | {r['timeout_rate']:.2%} |")
     (dest / 'report.md').write_text('\n'.join(lines) + '\n')
     print('Created', dest / 'report.md')
 

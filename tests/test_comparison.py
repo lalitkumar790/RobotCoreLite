@@ -31,6 +31,32 @@ class ComparisonAnalyzerTests(unittest.TestCase):
                 "0,responder,100,999,0.0,0.0,2048\n")
             self.assertEqual(analyze(folder), [])
 
+    def test_invalid_payload_is_not_misreported_as_timeout(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "invalid.csv"
+            with path.open("w", newline="") as f:
+                writer = csv.writer(f)
+                writer.writerow(["run_id", "transport", "payload_profile", "seq",
+                                 "payload_bytes", "status", "rtt_us", "rtt_half_proxy_us"])
+                writer.writerow(["bad", "ipc", "laser360", 2, 1440, "invalid_payload", "", ""])
+                writer.writerow(["bad", "ipc", "laser360", 3, 1440, "timeout", "", ""])
+                writer.writerow(["bad", "ipc", "laser360", 4, 1440, "ok", "100", "50"])
+            record = analyze(folder)[0]
+            self.assertEqual(record["payload_profile"], "laser360")
+            self.assertEqual(record["invalid_payload"], 1)
+            self.assertEqual(record["timed_out"], 1)
+            self.assertAlmostEqual(record["timeout_rate"], 1 / 3)
+
+    def test_inconsistent_profile_is_rejected(self):
+        with tempfile.TemporaryDirectory() as folder:
+            path = pathlib.Path(folder) / "mixed.csv"
+            path.write_text(
+                "run_id,transport,payload_profile,seq,payload_bytes,status,rtt_us,rtt_half_proxy_us\n"
+                "bad,ipc,laser360,1,1440,ok,100,50\n"
+                "bad,ipc,uniform,2,1440,ok,100,50\n")
+            with self.assertRaises(ValueError):
+                analyze(folder)
+
     def test_empty_directory(self):
         with tempfile.TemporaryDirectory() as folder:
             self.assertEqual(analyze(folder), [])

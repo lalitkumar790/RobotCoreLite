@@ -2,6 +2,7 @@
 // Same C++ initiator/responder workload; persistent SHM has a separate manager.
 // This measures request/reply RTT, never direct one-way latency.
 #include "robotcore/core.hpp"
+#include "sensor_payload.hpp"
 #if defined(ROBOTCORE_BENCH_DDS)
 #include "robotcore_ros/dds_transport.hpp"
 #include <rclcpp/rclcpp.hpp>
@@ -47,6 +48,8 @@ struct Options {
   std::uint64_t timeout_ms{1000};
   std::uint64_t discovery_timeout_ms{15000};
   std::size_t payload_bytes{64};
+  robotcore_bench::PayloadProfile profile{robotcore_bench::PayloadProfile::uniform};
+  bool explicit_payload_bytes{false};
   std::size_t qos_depth{10};
   bool reliable{true};
 };
@@ -75,8 +78,12 @@ Options parse(int argc, char** argv) {
     else if (key == "--warmup") opts.warmup = positive_integer(val, key, 1, 1000000);
     else if (key == "--timeout-ms") opts.timeout_ms = positive_integer(val, key, 1, 60000);
     else if (key == "--discovery-timeout-ms") opts.discovery_timeout_ms = positive_integer(val, key, 1, 60000);
-    else if (key == "--payload-bytes") opts.payload_bytes =
-      static_cast<std::size_t>(positive_integer(val, key, 1, robotcore::kMaxPayloadBytes));
+    else if (key == "--payload-bytes") {
+      opts.payload_bytes = static_cast<std::size_t>(
+          positive_integer(val, key, 1, robotcore::kMaxPayloadBytes));
+      opts.explicit_payload_bytes = true;
+    }
+    else if (key == "--payload-profile") opts.profile = robotcore_bench::parse_profile(val);
     else if (key == "--qos-depth") opts.qos_depth =
       static_cast<std::size_t>(positive_integer(val, key, 1, 10000));
     else if (key == "--reliability") {
@@ -100,6 +107,10 @@ Options parse(int argc, char** argv) {
   if (!opts.reliable || opts.qos_depth != 1)
     throw std::invalid_argument("SHM requires reliable=true and queue_depth=1");
 #endif
+  const auto required_bytes = robotcore_bench::profile_bytes(opts.profile, opts.payload_bytes);
+  if (opts.explicit_payload_bytes && opts.payload_bytes != required_bytes)
+    throw std::invalid_argument("payload bytes mismatch selected sensor profile");
+  opts.payload_bytes = required_bytes;
   if (opts.role == "initiator" && opts.csv.empty())
     throw std::invalid_argument("--csv required for initiator");
   if (opts.run_id.find('\n') != std::string::npos ||
@@ -120,15 +131,19 @@ std::string csv_escape(const std::string& value) {
 class RttSampler {
 public:
   RttSampler(robotcore::Transport& transport, const Options& opts)
-    : transport_(transport), opts_(opts), expected_payload_(opts.payload_bytes, 0xa5) {}
+    : transport_(transport), opts_(opts),
+      expected_payload_(robotcore_bench::make_payload(opts.profile, opts.payload_bytes, 0)) {}
 
   void on_reply(robotcore::Message reply) {
     const auto arrived = Clock::now();
-    if (reply.payload != expected_payload_) return;
     std::lock_guard<std::mutex> lock(mutex_);
-    if (reply.sequence != sequence_ || acknowledged_) return;
-    acknowledged_ = true;
-    arrived_ = arrived;
+    if (reply.sequence != sequence_ || acknowledged_ || invalid_reply_) return;
+    if (reply.payload != expected_payload_) {
+      invalid_reply_ = true;
+    } else {
+      acknowledged_ = true;
+      arrived_ = arrived;
+    }
     condition_.notify_one();
   }
 
@@ -150,54 +165,66 @@ public:
 #else
     constexpr const char* transport_name = "persistent_shared_memory";
 #endif
-    out << "run_id,transport,seq,payload_bytes,status,rtt_us,rtt_half_proxy_us\n";
-    std::uint64_t successes = 0, timeouts = 0;
+    out << "run_id,transport,payload_profile,seq,payload_bytes,status,rtt_us,rtt_half_proxy_us\n";
+    std::uint64_t successes = 0, timeouts = 0, invalid_replies = 0;
     const std::uint64_t total = opts_.warmup + opts_.samples;
     for (std::uint64_t seq = 1; seq <= total && running; ++seq) {
+      // Prepare frame bytes before starting RTT. The receive callback checks
+      // an immutable expected frame under the same mutex as sequence state.
+      auto payload = robotcore_bench::make_payload(opts_.profile, opts_.payload_bytes, seq);
       {
         std::lock_guard<std::mutex> lock(mutex_);
+        expected_payload_ = payload;
         sequence_ = seq;
         acknowledged_ = false;
+        invalid_reply_ = false;
       }
       const auto started = Clock::now();
-      const auto sent = transport_.publish({seq, expected_payload_});
+      const auto sent = transport_.publish({seq, std::move(payload)});
       if (!sent) {
         std::cerr << "publish error on sequence " << seq << ": " << sent.detail << "\n";
         return 3;
       }
       std::unique_lock<std::mutex> lock(mutex_);
-      const bool received = condition_.wait_for(
+      condition_.wait_for(
         lock, std::chrono::milliseconds(opts_.timeout_ms),
-        [this] { return acknowledged_ || !running.load(); });
+        [this] { return acknowledged_ || invalid_reply_ || !running.load(); });
       if (!running) return 130;
-      const double elapsed_us = received && acknowledged_
+      const bool received = acknowledged_;
+      const bool invalid = invalid_reply_;
+      const double elapsed_us = received
         ? std::chrono::duration<double, std::micro>(arrived_ - started).count() : 0.0;
       lock.unlock();
       if (seq <= opts_.warmup) {
         if (!received) {
-          std::cerr << "warmup timeout on sequence " << seq
+          std::cerr << (invalid ? "warmup invalid payload" : "warmup timeout")
+                    << " on sequence " << seq
                     << "; no comparable measurements produced\n";
           return 3;
         }
         continue;
       }
-      out << csv_escape(opts_.run_id) << ',' << transport_name << ',' << seq << ','
-          << opts_.payload_bytes << ',' << (received ? "ok" : "timeout") << ',';
+      out << csv_escape(opts_.run_id) << ',' << transport_name << ','
+          << robotcore_bench::profile_name(opts_.profile) << ',' << seq << ','
+          << opts_.payload_bytes << ','
+          << (received ? "ok" : (invalid ? "invalid_payload" : "timeout")) << ',';
       if (received) {
         out << std::fixed << std::setprecision(3) << elapsed_us << ','
             << elapsed_us / 2.0;
         ++successes;
       } else {
         out << ',';
-        ++timeouts;
+        if (invalid) ++invalid_replies;
+        else ++timeouts;
       }
       out << '\n';
     }
     out.flush();
     if (!out) throw std::runtime_error("CSV write failed");
     std::cout << "transport=" << transport_name << " received=" << successes
-              << " timed_out=" << timeouts << " recorded=" << successes + timeouts << "\n";
-    return timeouts ? 2 : 0;
+              << " timed_out=" << timeouts << " invalid=" << invalid_replies
+              << " recorded=" << successes + timeouts + invalid_replies << "\n";
+    return invalid_replies ? 3 : (timeouts ? 2 : 0);
   }
 private:
   bool await_discovery() {
@@ -215,8 +242,12 @@ private:
       }
       std::unique_lock<std::mutex> lock(mutex_);
       if (condition_.wait_for(lock, std::chrono::milliseconds(400),
-            [this] { return acknowledged_ || !running.load(); }) && acknowledged_) {
-        return true;
+            [this] { return acknowledged_ || invalid_reply_ || !running.load(); })) {
+        if (invalid_reply_) {
+          std::cerr << "discovery echo payload mismatch\n";
+          return false;
+        }
+        if (acknowledged_) return true;
       }
     }
     return false;
@@ -229,6 +260,7 @@ private:
   std::condition_variable condition_;
   std::uint64_t sequence_{0};
   bool acknowledged_{false};
+  bool invalid_reply_{false};
   Clock::time_point arrived_{};
 };
 
