@@ -1,7 +1,9 @@
 // Full native LaserScan -> versioned CDR -> selectable RobotCore-Lite transport.
 // Three OS processes (plus a separate region manager for persistent SHM).
 // Functional typed integration, not a latency or throughput benchmark.
-#if defined(ROBOTCORE_SENSOR_SHM)
+#if defined(ROBOTCORE_SENSOR_DDS)
+// This mode uses native ROS 2 typed publication and subscription directly.
+#elif defined(ROBOTCORE_SENSOR_SHM)
 #include "robotcore/shared_memory.hpp"
 #elif defined(ROBOTCORE_SENSOR_PSHM)
 #include "robotcore/persistent_shm.hpp"
@@ -9,6 +11,7 @@
 #include "robotcore/ipc.hpp"
 #endif
 #include "robotcore_ros/scan_codec.hpp"
+#include "robotcore_ros/scan_sequence.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <atomic>
@@ -28,7 +31,9 @@ using Scan = sensor_msgs::msg::LaserScan;
 using namespace std::chrono_literals;
 constexpr std::size_t kReadings = 360;
 constexpr const char* kScanTopic = "/robotcore/native_scan";
-#if defined(ROBOTCORE_SENSOR_SHM)
+#if defined(ROBOTCORE_SENSOR_DDS)
+constexpr const char* kBackendName = "dds_native";
+#elif defined(ROBOTCORE_SENSOR_SHM)
 constexpr const char* kBackendName = "shared_memory";
 #elif defined(ROBOTCORE_SENSOR_PSHM)
 constexpr const char* kBackendName = "persistent_shared_memory";
@@ -46,7 +51,7 @@ float generated_range(std::size_t angle, std::uint64_t seq) {
 }
 // Validate every field in this deterministic demo, not merely the ranges.
 // The CDR codec itself is generic and preserves arbitrary valid LaserScans.
-bool valid_scan(const Scan& scan) {
+bool valid_scan(const Scan& scan, std::uint64_t period_ms) {
   if (scan.header.frame_id != "laser_frame" ||
       scan.header.stamp.sec <= 0 ||
       scan.header.stamp.nanosec >= 1000000000u ||
@@ -54,8 +59,8 @@ bool valid_scan(const Scan& scan) {
       scan.angle_max != 3.14159265f ||
       scan.angle_increment != 6.28318530f / static_cast<float>(kReadings) ||
       scan.range_min != 0.2f || scan.range_max != 30.0f ||
-      scan.scan_time != 0.02f ||
-      scan.time_increment != 0.02f / static_cast<float>(kReadings) ||
+      scan.scan_time != static_cast<float>(period_ms) / 1000.0f ||
+      scan.time_increment != static_cast<float>(period_ms) / 1000.0f / static_cast<float>(kReadings) ||
       scan.ranges.size() != kReadings || scan.intensities.size() != 1 ||
       !std::isfinite(scan.intensities[0]) ||
       scan.intensities[0] < 1.0f || scan.intensities[0] > 1000000.0f)
@@ -70,6 +75,7 @@ struct Options {
   std::string role;
   std::string endpoint;
   std::uint64_t samples{20};
+  std::uint64_t period_ms{20};
 };
 Options parse(int argc, char** argv) {
   Options o;
@@ -78,7 +84,14 @@ Options parse(int argc, char** argv) {
     const std::string key = argv[i], value = argv[i + 1];
     if (key == "--role") o.role = value;
     else if (key == "--socket" || key == "--shm-name") o.endpoint = value;
-    else if (key == "--samples") {
+    else if (key == "--period-ms") {
+      if (value.empty() || value[0] == '-')
+        throw std::invalid_argument("period-ms must be a positive integer");
+      std::size_t used = 0;
+      o.period_ms = std::stoull(value, &used);
+      if (used != value.size() || o.period_ms < 1 || o.period_ms > 1000)
+        throw std::invalid_argument("period-ms out of range (1..1000)");
+    } else if (key == "--samples") {
       if (value.empty() || value[0] == '-')
         throw std::invalid_argument("samples must be positive");
       std::size_t used = 0;
@@ -92,22 +105,38 @@ Options parse(int argc, char** argv) {
       o.role != "sink" && o.role != "manager")
     throw std::invalid_argument("role must be source, bridge, sink or manager");
 #else
+#if defined(ROBOTCORE_SENSOR_DDS)
+  if (o.role != "source" && o.role != "sink")
+    throw std::invalid_argument("DDS reference role must be source or sink");
+#else
   if (o.role != "source" && o.role != "bridge" && o.role != "sink")
     throw std::invalid_argument("role must be source, bridge or sink");
 #endif
+#endif
+#if !defined(ROBOTCORE_SENSOR_DDS)
   if (o.role != "source" && o.endpoint.empty())
     throw std::invalid_argument("endpoint path or SHM name is required");
+#endif
   return o;
 }
 
 class ScanSource final : public rclcpp::Node {
 public:
-  explicit ScanSource(std::uint64_t samples)
-    : rclcpp::Node("robotcore_scan_source"), limit_(samples) {
+  explicit ScanSource(std::uint64_t samples, std::uint64_t period_ms)
+    : rclcpp::Node("robotcore_scan_source"), limit_(samples), period_ms_(period_ms),
+      ready_deadline_(std::chrono::steady_clock::now() + 15s) {
     publisher_ = create_publisher<Scan>(
         kScanTopic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable());
-    timer_ = create_wall_timer(20ms, [this] {
+    timer_ = create_wall_timer(std::chrono::milliseconds(period_ms_), [this] {
       if (sequence_ > limit_) { rclcpp::shutdown(); return; }
+      // Do not count early publications before the ROS subscription matches.
+      if (publisher_->get_subscription_count() == 0) {
+        if (std::chrono::steady_clock::now() >= ready_deadline_) {
+          RCLCPP_ERROR(this->get_logger(), "No LaserScan subscriber matched within 15 s");
+          rclcpp::shutdown();
+        }
+        return;
+      }
       Scan scan;
       scan.header.stamp = this->now();
       scan.header.frame_id = "laser_frame";
@@ -116,8 +145,8 @@ public:
       scan.angle_increment = 6.28318530f / static_cast<float>(kReadings);
       scan.range_min = 0.2f;
       scan.range_max = 30.0f;
-      scan.scan_time = 0.02f;
-      scan.time_increment = 0.02f / static_cast<float>(kReadings);
+      scan.scan_time = static_cast<float>(period_ms_) / 1000.0f;
+      scan.time_increment = scan.scan_time / static_cast<float>(kReadings);
       scan.intensities = {static_cast<float>(sequence_)};
       scan.ranges.reserve(kReadings);
       for (std::size_t i = 0; i < kReadings; ++i)
@@ -126,12 +155,15 @@ public:
       ++sequence_;
     });
   }
+  std::uint64_t published_count() const noexcept { return sequence_ - 1; }
 private:
-  std::uint64_t sequence_{1}, limit_;
+  std::uint64_t sequence_{1}, limit_, period_ms_;
+  std::chrono::steady_clock::time_point ready_deadline_;
   rclcpp::Publisher<Scan>::SharedPtr publisher_;
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
+#if !defined(ROBOTCORE_SENSOR_DDS)
 robotcore::Configuration sensor_transport_config() {
   robotcore::Configuration c;
 #if defined(ROBOTCORE_SENSOR_SHM)
@@ -180,37 +212,69 @@ int run_manager(const Options& o) {
 }
 #endif
 
+#endif  // Native transports
+
 int run_sink(const Options& o) {
+#if defined(ROBOTCORE_SENSOR_DDS)
+  rclcpp::init(0, nullptr);
+  auto node = std::make_shared<rclcpp::Node>("robotcore_dds_scan_sink");
+#else
   auto sink = make_transport(o, true);
+#endif
   std::atomic<std::uint64_t> count{0};
   std::atomic<bool> invalid{false};
-  std::uint64_t last_seq = 0; // callback worker only
+  robotcore_ros::StrictScanSequence tracker(o.samples);  // callback thread only
+  auto check_scan = [&](const Scan& scan, std::uint64_t seq) {
+    if (!valid_scan(scan, o.period_ms) ||
+        seq != static_cast<std::uint64_t>(scan.intensities[0]) ||
+        !tracker.accept(seq)) {
+      invalid = true;
+      return;
+    }
+    ++count;
+  };
+#if defined(ROBOTCORE_SENSOR_DDS)
+  auto subscriber = node->create_subscription<Scan>(
+      kScanTopic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
+      [&](Scan::ConstSharedPtr scan) {
+        check_scan(*scan, static_cast<std::uint64_t>(
+            scan->intensities.empty() ? 0.0f : scan->intensities[0]));
+      });
+  (void)subscriber;
+#else
   const auto started = sink->start([&](robotcore::Message message) {
     try {
       const Scan scan = robotcore_ros::scan_codec::decode(message.payload);
-      if (!valid_scan(scan) ||
-          message.sequence != static_cast<std::uint64_t>(scan.intensities[0]) ||
-          message.sequence <= last_seq) {
-        invalid = true;
-        return;
-      }
-      last_seq = message.sequence;
-      ++count;
+      check_scan(scan, message.sequence);
     } catch (const std::exception&) {
       invalid = true;
     }
   });
   if (!started) throw std::runtime_error("sink start: " + started.detail);
-  const auto deadline = std::chrono::steady_clock::now() + 20s;
+#endif
+  const auto deadline = std::chrono::steady_clock::now() +
+      std::chrono::milliseconds(o.samples * o.period_ms + 15000);
   while (count.load() < o.samples && !invalid &&
-         std::chrono::steady_clock::now() < deadline)
-    std::this_thread::sleep_for(10ms);
+         std::chrono::steady_clock::now() < deadline) {
+#if defined(ROBOTCORE_SENSOR_DDS)
+    rclcpp::spin_some(node);
+    std::this_thread::sleep_for(1ms);
+#else
+    std::this_thread::sleep_for(2ms);
+#endif
+  }
+#if defined(ROBOTCORE_SENSOR_DDS)
+  rclcpp::shutdown();
+#else
   const auto result = sink->stop();
   if (!result) throw std::runtime_error("sink stop: " + result.detail);
+#endif
   std::cout << "validated_native_scan_frames=" << count.load()
+            << " expected=" << o.samples
             << " invalid=" << invalid.load() << '\n';
-  return !invalid && count >= o.samples ? 0 : 2;
+  return !invalid && count == o.samples ? 0 : 2;
 }
+#if !defined(ROBOTCORE_SENSOR_DDS)
 int run_bridge(const Options& o, int argc, char** argv) {
   auto sender = make_transport(o, false);
   const auto started = sender->start([](robotcore::Message) {});
@@ -221,7 +285,7 @@ int run_bridge(const Options& o, int argc, char** argv) {
   auto subscriber = node->create_subscription<Scan>(
       kScanTopic, rclcpp::QoS(rclcpp::KeepLast(10)).reliable(),
       [&](Scan::ConstSharedPtr scan) {
-        if (!valid_scan(*scan)) { ++failed; return; }
+        if (!valid_scan(*scan, o.period_ms)) { ++failed; return; }
         try {
           const auto seq = static_cast<std::uint64_t>(scan->intensities[0]);
           const auto frame = robotcore_ros::scan_codec::encode(*scan);
@@ -239,12 +303,15 @@ int run_bridge(const Options& o, int argc, char** argv) {
   std::cout << "bridge_forwarded=" << forwarded << " errors=" << failed << '\n';
   return failed ? 2 : 0;
 }
+#endif
 int run_source(const Options& o, int argc, char** argv) {
   rclcpp::init(argc, argv);
-  auto node = std::make_shared<ScanSource>(o.samples);
+  auto node = std::make_shared<ScanSource>(o.samples, o.period_ms);
   rclcpp::spin(node);
+  const auto sent = node->published_count();
   rclcpp::shutdown();
-  return 0;
+  std::cout << "published_native_scan_frames=" << sent << " expected=" << o.samples << '\n';
+  return sent == o.samples ? 0 : 2;
 }
 } // namespace
 
@@ -255,7 +322,9 @@ int main(int argc, char** argv) {
     if (o.role == "manager") return run_manager(o);
 #endif
     if (o.role == "sink") return run_sink(o);
+#if !defined(ROBOTCORE_SENSOR_DDS)
     if (o.role == "bridge") return run_bridge(o, argc, argv);
+#endif
     return run_source(o, argc, argv);
   } catch (const std::exception& e) {
     std::cerr << "sensor-to-" << kBackendName << " demo: " << e.what() << '\n';

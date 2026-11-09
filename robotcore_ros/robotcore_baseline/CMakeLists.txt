@@ -42,6 +42,14 @@ target_link_libraries(sensor_ipc_demo robotcore_sensor_demo_ipc Threads::Threads
 ament_target_dependencies(sensor_ipc_demo rclcpp sensor_msgs)
 target_compile_options(sensor_ipc_demo PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
+# Native typed DDS reference: source and sink use the same LaserScan generator
+# and full-field sequence validation, with direct ROS 2 DDS delivery.
+add_executable(sensor_dds_demo src/sensor_ipc_demo.cpp)
+target_compile_definitions(sensor_dds_demo PRIVATE ROBOTCORE_SENSOR_DDS)
+target_include_directories(sensor_dds_demo PRIVATE include)
+ament_target_dependencies(sensor_dds_demo rclcpp sensor_msgs)
+target_compile_options(sensor_dds_demo PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
 # Full native LaserScan CDR integration over both shared-memory transports.
 # The same source compiles into all three typed bridge executables.
 add_library(robotcore_sensor_demo_shm STATIC
@@ -83,6 +91,6 @@ ament_target_dependencies(scan_codec_test rclcpp sensor_msgs)
 target_compile_options(scan_codec_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
 install(TARGETS dds_pingpong dds_adapter_smoke transport_bench_dds
-  sensor_ipc_demo sensor_shm_demo sensor_persistent_shm_demo scan_codec_test DESTINATION lib/${PROJECT_NAME})
+  sensor_dds_demo sensor_ipc_demo sensor_shm_demo sensor_persistent_shm_demo scan_codec_test DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 ament_package()
