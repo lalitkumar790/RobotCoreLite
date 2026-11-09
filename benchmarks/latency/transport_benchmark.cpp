@@ -1,5 +1,5 @@
-// Shared stop-and-wait benchmark for ROS 2 DDS and Linux IPC.
-// Build the SAME source as transport_bench_dds and transport_bench_ipc.
+// Shared stop-and-wait benchmark across all four RobotCore-Lite transport modes.
+// Same C++ initiator/responder workload; persistent SHM has a separate manager.
 // This measures request/reply RTT, never direct one-way latency.
 #include "robotcore/core.hpp"
 #if defined(ROBOTCORE_BENCH_DDS)
@@ -9,8 +9,10 @@
 #include "robotcore/ipc.hpp"
 #elif defined(ROBOTCORE_BENCH_SHM)
 #include "robotcore/shared_memory.hpp"
+#elif defined(ROBOTCORE_BENCH_PSHM)
+#include "robotcore/persistent_shm.hpp"
 #else
-#error "Select DDS, IPC or SHM benchmark backend"
+#error "Select exactly one of DDS, IPC, SHM, persistent SHM"
 #endif
 #include <atomic>
 #include <chrono>
@@ -83,12 +85,17 @@ Options parse(int argc, char** argv) {
       opts.reliable = val == "reliable";
     } else throw std::invalid_argument("unknown argument: " + key);
   }
+#if defined(ROBOTCORE_BENCH_PSHM)
+  if (opts.role != "initiator" && opts.role != "responder" && opts.role != "manager")
+    throw std::invalid_argument("role must be initiator, responder, or manager");
+#else
   if (opts.role != "initiator" && opts.role != "responder")
     throw std::invalid_argument("role must be initiator or responder");
+#endif
 #if defined(ROBOTCORE_BENCH_IPC)
   if (opts.socket_path.empty()) throw std::invalid_argument("--socket required for IPC");
   if (!opts.reliable) throw std::invalid_argument("IPC does not implement best_effort");
-#elif defined(ROBOTCORE_BENCH_SHM)
+#elif defined(ROBOTCORE_BENCH_SHM) || defined(ROBOTCORE_BENCH_PSHM)
   if (opts.shm_name.empty()) throw std::invalid_argument("--shm-name required for SHM");
   if (!opts.reliable || opts.qos_depth != 1)
     throw std::invalid_argument("SHM requires reliable=true and queue_depth=1");
@@ -138,8 +145,10 @@ public:
     constexpr const char* transport_name = "dds";
 #elif defined(ROBOTCORE_BENCH_IPC)
     constexpr const char* transport_name = "ipc";
-#else
+#elif defined(ROBOTCORE_BENCH_SHM)
     constexpr const char* transport_name = "shared_memory";
+#else
+    constexpr const char* transport_name = "persistent_shared_memory";
 #endif
     out << "run_id,transport,seq,payload_bytes,status,rtt_us,rtt_half_proxy_us\n";
     std::uint64_t successes = 0, timeouts = 0;
@@ -232,12 +241,29 @@ int run(int argc, char** argv) {
   config.transport = robotcore::TransportKind::dds;
 #elif defined(ROBOTCORE_BENCH_IPC)
   config.transport = robotcore::TransportKind::ipc;
-#else
+#elif defined(ROBOTCORE_BENCH_SHM)
   config.transport = robotcore::TransportKind::shared_memory;
+#else
+  config.transport = robotcore::TransportKind::persistent_shared_memory;
 #endif
   config.max_payload_bytes = opts.payload_bytes;
   config.queue_depth = opts.qos_depth;
   config.reliable = opts.reliable;
+
+#if defined(ROBOTCORE_BENCH_PSHM)
+  if (opts.role == "manager") {
+    robotcore::PersistentRegionManager manager(opts.shm_name, opts.payload_bytes);
+    const auto created = manager.start();
+    if (!created) throw std::runtime_error("persistent manager start: " + created.detail);
+    const auto prepared = manager.begin_session();
+    if (!prepared) throw std::runtime_error("persistent manager session: " + prepared.detail);
+    std::cout << "manager_ready_epoch=" << manager.epoch() << std::endl;
+    while (running) std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    const auto stopped = manager.stop();
+    if (!stopped) throw std::runtime_error("persistent manager stop: " + stopped.detail);
+    return 0;
+  }
+#endif
 
 #if defined(ROBOTCORE_BENCH_DDS)
   rclcpp::init(argc, argv);
@@ -252,9 +278,12 @@ int run(int argc, char** argv) {
 #elif defined(ROBOTCORE_BENCH_IPC)
   const bool responder = opts.role == "responder";
   robotcore::UnixSocketTransport transport(opts.socket_path, responder, config);
-#else
+#elif defined(ROBOTCORE_BENCH_SHM)
   const bool responder = opts.role == "responder";
   robotcore::SharedMemoryTransport transport(opts.shm_name, responder, config);
+#else
+  const bool responder = opts.role == "responder";
+  robotcore::PersistentSharedMemoryTransport transport(opts.shm_name, responder, config);
 #endif
 
   if (responder) {

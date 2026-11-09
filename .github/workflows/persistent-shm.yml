@@ -13,3 +13,35 @@ jobs:
           cmake --build build/pshm --parallel
       - name: Repeated crash and multi-session tests
         run: ctest --test-dir build/pshm --output-on-failure --repeat until-fail:15
+      - name: Persistent SHM three-process functional benchmark smoke
+        run: |
+          set -euo pipefail
+          name="/robotcore-persistent-ci-$$"
+          bin="./build/pshm/transport_bench_persistent_shm"
+          "$bin" --role manager --shm-name "$name" --qos-depth 1 --payload-bytes 128 > /tmp/rc-pshm-manager.log 2>&1 &
+          manager=$!
+          responder=""
+          cleanup() {
+            if [[ -n "$responder" ]]; then
+              kill "$responder" 2>/dev/null || true
+              wait "$responder" 2>/dev/null || true
+            fi
+            kill "$manager" 2>/dev/null || true
+            wait "$manager" 2>/dev/null || true
+          }
+          trap cleanup EXIT
+          for i in $(seq 1 100); do
+            grep -q 'manager_ready_epoch=1' /tmp/rc-pshm-manager.log && break
+            sleep 0.05
+          done
+          grep -q 'manager_ready_epoch=1' /tmp/rc-pshm-manager.log
+          "$bin" --role responder --shm-name "$name" --qos-depth 1 --payload-bytes 128 > /tmp/rc-pshm-server.log 2>&1 &
+          responder=$!
+          timeout 30s "$bin" --role initiator --shm-name "$name" --qos-depth 1 --payload-bytes 128 --samples 30 --warmup 10 --timeout-ms 1000 --run-id ci-persistent --csv /tmp/rc-pshm.csv
+          test "$(wc -l < /tmp/rc-pshm.csv)" -eq 31
+          kill "$responder"
+          wait "$responder" || true
+          responder=""
+          kill "$manager"
+          wait "$manager"
+          trap - EXIT
