@@ -18,6 +18,12 @@ target_include_directories(dds_adapter_smoke PRIVATE
 ament_target_dependencies(dds_adapter_smoke rclcpp std_msgs)
 target_compile_options(dds_adapter_smoke PRIVATE -Wall -Wextra -Wpedantic -Werror)
 
-install(TARGETS dds_pingpong dds_adapter_smoke DESTINATION lib/${PROJECT_NAME})
+add_executable(transport_bench_dds ../../benchmarks/latency/transport_benchmark.cpp)
+target_compile_definitions(transport_bench_dds PRIVATE ROBOTCORE_BENCH_DDS)
+target_include_directories(transport_bench_dds PRIVATE include ../../robotcore_core/include)
+ament_target_dependencies(transport_bench_dds rclcpp std_msgs)
+target_compile_options(transport_bench_dds PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+install(TARGETS dds_pingpong dds_adapter_smoke transport_bench_dds DESTINATION lib/${PROJECT_NAME})
 install(DIRECTORY include/ DESTINATION include)
 ament_package()

@@ -31,6 +31,7 @@ def analyze(folder):
             raise ValueError(f'Invalid RTT in {path}')
         success = len(latencies)
         result = dict(file=str(path), run_id=rows[0]['run_id'],
+                      transport=rows[0].get('transport', 'dds_legacy'),
                       payload_bytes=int(rows[0]['payload_bytes']),
                       attempted=len(rows), received=success,
                       timed_out=len(rows) - success,
@@ -57,14 +58,14 @@ def main(argv):
     with (dest / 'summary.csv').open('w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader(); writer.writerows(results)
-    lines = ['# DDS RTT baseline report', '',
+    lines = ['# Transport RTT report', '',
              'RTT is measured using one steady clock. RTT/2 is **not** measured one-way latency.',
              'Timeout is a missing reply in this benchmark, not necessarily network packet loss.', '',
-             '| Run | Bytes | Success / Attempts | Mean RTT (us) | P95 | P99 | Timeout rate |',
-             '|---|---:|---:|---:|---:|---:|---:|']
+             '| Transport | Run | Bytes | Success / Attempts | Mean RTT (us) | P95 | P99 | Timeout rate |',
+             '|---|---|---:|---:|---:|---:|---:|---:|']
     def fmt(v): return f'{v:.2f}' if v is not None else 'N/A'
     for r in results:
-        lines.append(f"| {r['run_id']} | {r['payload_bytes']} | {r['received']} / {r['attempted']} | {fmt(r['mean_rtt_us'])} | {fmt(r['p95_rtt_us'])} | {fmt(r['p99_rtt_us'])} | {r['loss_rate']:.2%} |")
+        lines.append(f"| {r['transport']} | {r['run_id']} | {r['payload_bytes']} | {r['received']} / {r['attempted']} | {fmt(r['mean_rtt_us'])} | {fmt(r['p95_rtt_us'])} | {fmt(r['p99_rtt_us'])} | {r['loss_rate']:.2%} |")
     (dest / 'report.md').write_text('\n'.join(lines) + '\n')
     print('Created', dest / 'report.md')
 

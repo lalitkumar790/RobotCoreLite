@@ -51,6 +51,14 @@ ctest --test-dir build/ipc --output-on-failure
 ```
 This validates functional framing, sequencing and lifecycle; it does **not** measure IPC speed. See [IPC design and limitations](docs/ipc-transport.md).
 
+### Common DDS versus IPC benchmark harness
+The two executables compile the same stop-and-wait C++ test implementation. For Ubuntu 24.04 and Jazzy:
+```bash
+source /opt/ros/jazzy/setup.bash
+bash scripts/run_comparison.sh
+```
+The runner builds Release binaries, alternates order between repetitions, records raw CSV and host metadata, and writes a summary report. **No benchmark result is included in the repository.** The CI smoke checks are functional only; see [comparison methodology](docs/comparison-methodology.md).
+
 ### Research plan
 1. Measure baseline DDS under controlled conditions.
 2. Introduce transport abstraction and explicit configuration.

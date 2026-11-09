@@ -29,3 +29,8 @@ if(BUILD_TESTING)
  add_test(NAME ipc_reconnect_sessions COMMAND ipc_reconnect_test)
  set_tests_properties(ipc_reconnect_sessions PROPERTIES TIMEOUT 20)
 endif()
+
+add_executable(transport_bench_ipc ../../benchmarks/latency/transport_benchmark.cpp)
+target_compile_definitions(transport_bench_ipc PRIVATE ROBOTCORE_BENCH_IPC)
+target_link_libraries(transport_bench_ipc PRIVATE robotcore_ipc)
+target_compile_options(transport_bench_ipc PRIVATE -Wall -Wextra -Wpedantic -Werror)

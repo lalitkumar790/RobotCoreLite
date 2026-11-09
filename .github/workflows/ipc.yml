@@ -14,3 +14,17 @@ jobs:
       - name: Cross-process IPC tests
         run: |
           ctest --test-dir build/ipc --output-on-failure --repeat until-fail:20
+      - name: Cross-process IPC benchmark functional smoke (not performance evidence)
+        run: |
+          set -euo pipefail
+          socket="/tmp/rc-ipc-bench-$$.sock"
+          ./build/ipc/transport_bench_ipc --role responder --socket "$socket" --payload-bytes 128 > /tmp/rc-ipc-server.log 2>&1 &
+          responder=$!
+          trap 'kill "$responder" 2>/dev/null || true; wait "$responder" 2>/dev/null || true; rm -f "$socket"' EXIT
+          for n in $(seq 1 100); do
+            if [[ -S "$socket" ]]; then break; fi
+            sleep 0.05
+          done
+          test -S "$socket"
+          timeout 30s ./build/ipc/transport_bench_ipc --role initiator --socket "$socket" --payload-bytes 128 --samples 30 --warmup 10 --timeout-ms 1000 --run-id ci-ipc --csv /tmp/rc-ipc.csv
+          test "$(wc -l < /tmp/rc-ipc.csv)" -eq 31

@@ -29,3 +29,15 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           timeout 20s ros2 run robotcore_baseline dds_adapter_smoke
+      - name: Cross-process DDS benchmark functional smoke (not performance evidence)
+        shell: bash
+        run: |
+          set -euo pipefail
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          ros2 run robotcore_baseline transport_bench_dds --role responder --payload-bytes 128 > /tmp/rc-dds-server.log 2>&1 &
+          responder=$!
+          trap 'kill "$responder" 2>/dev/null || true; wait "$responder" 2>/dev/null || true' EXIT
+          sleep 3
+          timeout 45s ros2 run robotcore_baseline transport_bench_dds --role initiator --payload-bytes 128 --samples 30 --warmup 15 --timeout-ms 2000 --run-id ci-dds --csv /tmp/rc-dds.csv
+          test "$(wc -l < /tmp/rc-dds.csv)" -eq 31
