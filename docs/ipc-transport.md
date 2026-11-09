@@ -36,3 +36,5 @@ The test forks **before** starting transport threads, exchanges sequenced binary
 
 ## Fault-injection validation
 CI now tests idle-server cancellation before any client connects and injects malformed raw socket frames (truncated header, invalid magic, length above the allowed limit, bad checksum and short payload). These must never dispatch application callbacks; tests do not measure performance. The server accept worker polls at bounded intervals to ensure stop does not rely on Linux-specific listening-socket shutdown behavior.
+
+Concurrent-publish stress testing now exercises 4 producer threads (150 messages each), validates payload integrity and exactly-once observation **within this local test**, and checks clean peer disconnect. This is not a general exactly-once delivery guarantee or a throughput benchmark.
