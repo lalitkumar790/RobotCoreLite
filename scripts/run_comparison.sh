@@ -132,5 +132,6 @@ for ((run=1; run<=RUNS; ++run)); do
   done
 done
 python3 "$ROOT/scripts/analyze_results.py" "$OUT" "$REPORT"
+python3 "$ROOT/scripts/summarize_comparison.py" "$REPORT/summary.json" "$REPORT/comparison.md"
 echo "Raw measurements: $OUT"
 echo "Summary: $REPORT/report.md"

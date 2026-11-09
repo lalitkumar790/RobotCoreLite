@@ -23,9 +23,23 @@ def analyze(folder):
             rows = list(csv.DictReader(f))
         if not rows:
             continue
+        run_id = rows[0]['run_id']
+        transport = rows[0].get('transport', 'dds_legacy')
+        payload = int(rows[0]['payload_bytes'])
+        if transport not in ('dds', 'ipc', 'dds_legacy'):
+            raise ValueError(f'Unknown transport in {path}: {transport}')
+        if any(r['run_id'] != run_id or
+               r.get('transport', 'dds_legacy') != transport or
+               int(r['payload_bytes']) != payload for r in rows):
+            raise ValueError(f'Inconsistent run metadata in {path}')
+        sequences = [int(r['seq']) for r in rows]
+        if len(sequences) != len(set(sequences)):
+            raise ValueError(f'Duplicate sequence numbers in {path}')
         statuses = [r['status'] for r in rows]
         if any(x not in ('ok', 'timeout') for x in statuses):
             raise ValueError(f'Unexpected status in {path}')
+        if any(r['rtt_us'].strip() for r in rows if r['status'] == 'timeout'):
+            raise ValueError(f'Timeouts must not contain RTT values in {path}')
         latencies = sorted(float(r['rtt_us']) for r in rows if r['status'] == 'ok')
         if not all(math.isfinite(x) and x >= 0 for x in latencies):
             raise ValueError(f'Invalid RTT in {path}')
@@ -36,6 +50,7 @@ def analyze(folder):
                       attempted=len(rows), received=success,
                       timed_out=len(rows) - success,
                       loss_rate=(len(rows) - success) / len(rows),
+                      timeout_rate=(len(rows) - success) / len(rows),
                       mean_rtt_us=statistics.mean(latencies) if latencies else None,
                       median_rtt_us=statistics.median(latencies) if latencies else None,
                       p95_rtt_us=percentile(latencies, 95),
