@@ -30,3 +30,7 @@ Add process-crash and malformed-header injection, owner/generation verification,
 
 ## Ownership and crash tests
 A separate cross-process test confirms that duplicate clients are refused, orderly detach permits reattachment, payloads of length zero and the exact configured bound are accepted, mismatched capacities are rejected, and abrupt server process exit leaves a name that is not silently overwritten. The test removes its orphaned object explicitly after verifying the child has exited. This is test-fixture cleanup, not automatic production crash recovery.
+
+## Persistent mode: research distinction
+
+The current `shared_memory` mode preallocates and reuses two slots *within one server lifetime*, but the mapping is unlinked when its owner stops. This is not a distinct persistent transport. A future `persistent_shared_memory` mode must keep a managed allocation pool across endpoint sessions, implement epoch/generation fencing and crash-safe lease recovery, and quantify the avoided setup/allocation work. With the current `Transport::publish(const Message&)` and copied receive callback, even persistent mode cannot honestly claim zero-copy application delivery. A separate loan/return API is required for that claim; see the design proposal.

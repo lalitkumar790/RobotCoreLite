@@ -4,6 +4,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <fstream>
+#include <poll.h>
+#include <sstream>
+#include <string>
+#include <sys/syscall.h>
 #include <fcntl.h>
 #include <semaphore.h>
 #include <sys/mman.h>
@@ -14,7 +19,7 @@
 
 namespace robotcore {
 namespace {
-constexpr std::uint32_t kMagic = 0x52435331; // RCS1, layout version one.
+constexpr std::uint32_t kMagic = 0x52435332; // RCS2: PID-validated owner identity.
 constexpr int kPollMs = 100;
 constexpr int kWriteTimeoutMs = 2000;
 
@@ -30,6 +35,9 @@ struct Region {
   std::uint32_t ready;
   std::uint32_t capacity;
   std::uint32_t client_claim;
+  std::uint32_t owner_pid;
+  std::uint32_t reserved;
+  std::uint64_t owner_start_ticks;
   Slot slots[2];
 };
 std::uint8_t* bytes(Region* region, int slot) {
@@ -54,6 +62,29 @@ int wait_one(sem_t* sem, int timeout_ms) {
   int result;
   do { result = ::sem_timedwait(sem, &deadline); } while (result < 0 && errno == EINTR);
   return result;
+}
+
+// Linux PID alone is not sufficient: a crashed owner's PID may be recycled.
+// /proc/<pid>/stat field 22 identifies its process start time in clock ticks.
+std::uint64_t start_ticks(pid_t pid) {
+  std::ifstream proc("/proc/" + std::to_string(pid) + "/stat");
+  std::string stat;
+  if (!std::getline(proc, stat)) return 0;
+  const auto end_name = stat.rfind(')');
+  if (end_name == std::string::npos || end_name + 2 >= stat.size()) return 0;
+  std::istringstream fields(stat.substr(end_name + 2));
+  std::string token;
+  for (int field = 3; field <= 22; ++field) {
+    if (!(fields >> token)) return 0;
+  }
+  try { return std::stoull(token); } catch (...) { return 0; }
+}
+bool pidfd_alive(int fd) {
+  if (fd < 0) return false;
+  pollfd p{}; p.fd = fd; p.events = POLLIN;
+  // A pidfd becomes readable when that specific process exits.
+  const int ready = ::poll(&p, 1, 0);
+  return ready == 0;
 }
 bool valid_name(const std::string& name) {
   return name.size() > 1 && name.size() <= 200 && name[0] == '/'
@@ -109,6 +140,12 @@ Status SharedMemoryTransport::start(ReceiveCallback callback) {
   if (server_) {
     std::memset(region, 0, mapping_size_);
     region->magic = kMagic;
+    region->owner_pid = static_cast<std::uint32_t>(::getpid());
+    region->owner_start_ticks = start_ticks(::getpid());
+    if (!region->owner_start_ticks) {
+      release_resources();
+      return Status::failure(Error::io_error, "could not establish server process identity");
+    }
     region->capacity = static_cast<std::uint32_t>(config_.max_payload_bytes);
     int initialized = 0;
     for (int i = 0; i < 2; ++i) {
@@ -136,6 +173,17 @@ Status SharedMemoryTransport::start(ReceiveCallback callback) {
       release_resources();
       return Status::failure(Error::io_error, "incompatible or uninitialized region");
     }
+    // pin the exact server process before accepting its semaphores.
+    // Fail closed if PID was reused or the server has already exited.
+    const auto pid = static_cast<pid_t>(region->owner_pid);
+    const auto expected_ticks = region->owner_start_ticks;
+    owner_pidfd_ = static_cast<int>(::syscall(SYS_pidfd_open, pid, 0u));
+    if (pid <= 0 || expected_ticks == 0 || !pidfd_alive(owner_pidfd_) ||
+        start_ticks(pid) != expected_ticks || 
+        __atomic_load_n(&region->ready, __ATOMIC_ACQUIRE) != 1u) {
+      release_resources();
+      return Status::failure(Error::closed, "shared-memory server identity is no longer active");
+    }
     // Enforce one client. A crashed client leaves the claim set: fail closed.
     std::uint32_t expected = 0;
     if (!__atomic_compare_exchange_n(&region->client_claim, &expected, 1u,
@@ -144,6 +192,10 @@ Status SharedMemoryTransport::start(ReceiveCallback callback) {
       return Status::failure(Error::already_started, "client already attached");
     }
     owns_client_claim_ = true;
+    if (!owner_alive()) {
+      release_resources();
+      return Status::failure(Error::closed, "shared-memory server closed during attach");
+    }
   }
   callback_ = std::move(callback);
   running_ = true;
@@ -159,8 +211,11 @@ Status SharedMemoryTransport::start(ReceiveCallback callback) {
 }
 
 Status SharedMemoryTransport::publish(const Message& message) {
-  if (!running_ || !mapping_)
-    return Status::failure(Error::not_started, "shared-memory endpoint not started");
+  if (!mapping_) return Status::failure(Error::not_started, "shared-memory endpoint not started");
+  if (!server_ && !owner_alive())
+    return Status::failure(Error::closed, "shared-memory server exited or closed");
+  if (!running_)
+    return Status::failure(Error::not_started, "shared-memory endpoint not running");
   const auto valid = validate_message(message, config_);
   if (!valid) return valid;
   auto* region = static_cast<Region*>(mapping_);
@@ -170,12 +225,20 @@ Status SharedMemoryTransport::publish(const Message& message) {
                       + std::chrono::milliseconds(kWriteTimeoutMs);
   bool acquired = false;
   while (running_ && std::chrono::steady_clock::now() < deadline) {
+    if (!server_ && !owner_alive())
+      return Status::failure(Error::closed, "shared-memory server exited or closed");
     if (wait_one(&slot.free, kPollMs) == 0) { acquired = true; break; }
     if (errno != ETIMEDOUT && errno != EINTR)
       return Status::failure(Error::io_error, "shared-memory free semaphore error");
   }
   if (!acquired)
-    return Status::failure(Error::io_error, "shared-memory slot unavailable (peer stalled or stopped)");
+    return !server_ && !owner_alive()
+      ? Status::failure(Error::closed, "shared-memory server exited or closed")
+      : Status::failure(Error::io_error, "shared-memory slot unavailable (peer stalled or stopped)");
+  if (!server_ && !owner_alive()) {
+    ::sem_post(&slot.free);
+    return Status::failure(Error::closed, "shared-memory server closed after slot acquisition");
+  }
   // The producer owns this slot until posting filled. The peer cannot read it
   // until then; the next producer cannot reuse it until consumption completes.
   slot.seq = message.sequence;
@@ -193,6 +256,7 @@ void SharedMemoryTransport::receive_loop() {
   const int index = server_ ? 0 : 1;
   auto& slot = region->slots[index];
   while (running_) {
+    if (!server_ && !owner_alive()) { running_ = false; break; }
     if (wait_one(&slot.filled, kPollMs) != 0) {
       if (errno == ETIMEDOUT || errno == EINTR) continue;
       break;
@@ -213,6 +277,13 @@ void SharedMemoryTransport::receive_loop() {
   }
 }
 
+bool SharedMemoryTransport::owner_alive() const {
+  if (server_) return true;
+  if (!mapping_ || !pidfd_alive(owner_pidfd_)) return false;
+  const auto* region = static_cast<const Region*>(mapping_);
+  return __atomic_load_n(&region->ready, __ATOMIC_ACQUIRE) == 1u;
+}
+
 void SharedMemoryTransport::release_resources() {
   if (mapping_) {
     if (owns_client_claim_) {
@@ -223,6 +294,10 @@ void SharedMemoryTransport::release_resources() {
     ::munmap(mapping_, mapping_size_);
     mapping_ = nullptr;
   }
+  if (owner_pidfd_ >= 0) {
+    ::close(owner_pidfd_);
+    owner_pidfd_ = -1;
+  }
   if (owns_name_) {
     ::shm_unlink(name_.c_str());
     owns_name_ = false;
@@ -231,6 +306,12 @@ void SharedMemoryTransport::release_resources() {
 Status SharedMemoryTransport::stop() {
   if (worker_.joinable() && worker_.get_id() == std::this_thread::get_id())
     return Status::failure(Error::invalid_argument, "stop forbidden from receive callback");
+  if (server_ && mapping_) {
+    auto* region = static_cast<Region*>(mapping_);
+    // A clean owner shutdown is distinct from process death; advertise it
+    // before the region is unmapped so clients fail closed rather than stall.
+    __atomic_store_n(&region->ready, 2u, __ATOMIC_RELEASE);
+  }
   running_ = false;
   if (worker_.joinable()) worker_.join();
   callback_ = {};
