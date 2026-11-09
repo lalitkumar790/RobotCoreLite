@@ -46,3 +46,10 @@ jobs:
             exit 1
           fi
           test "$(wc -l < /tmp/rc-dds.csv)" -eq 31
+      - name: End-to-end comparison runner smoke (not research-grade results)
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          RUNS=1 PAYLOADS=64 SAMPLES=20 WARMUP=5 TIMEOUT_MS=2000 MAX_RUN_SECS=60 \
+            bash scripts/run_comparison.sh
+          test -n "$(find results/reports -name comparison.md -size +0c -print -quit)"
