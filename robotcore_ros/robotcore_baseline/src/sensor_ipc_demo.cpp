@@ -1,10 +1,18 @@
-// Complete native ROS 2 LaserScan -> versioned CDR -> IPC -> typed validation.
-// Three OS processes. Functional integration only, not a latency benchmark.
+// Full native LaserScan -> versioned CDR -> selectable RobotCore-Lite transport.
+// Three OS processes (plus a separate region manager for persistent SHM).
+// Functional typed integration, not a latency or throughput benchmark.
+#if defined(ROBOTCORE_SENSOR_SHM)
+#include "robotcore/shared_memory.hpp"
+#elif defined(ROBOTCORE_SENSOR_PSHM)
+#include "robotcore/persistent_shm.hpp"
+#else
 #include "robotcore/ipc.hpp"
+#endif
 #include "robotcore_ros/scan_codec.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <atomic>
+#include <csignal>
 #include <chrono>
 #include <cmath>
 #include <cstdint>
@@ -20,6 +28,18 @@ using Scan = sensor_msgs::msg::LaserScan;
 using namespace std::chrono_literals;
 constexpr std::size_t kReadings = 360;
 constexpr const char* kScanTopic = "/robotcore/native_scan";
+#if defined(ROBOTCORE_SENSOR_SHM)
+constexpr const char* kBackendName = "shared_memory";
+#elif defined(ROBOTCORE_SENSOR_PSHM)
+constexpr const char* kBackendName = "persistent_shared_memory";
+#else
+constexpr const char* kBackendName = "ipc";
+#endif
+
+#if defined(ROBOTCORE_SENSOR_PSHM)
+volatile std::sig_atomic_t manager_stop_signal = 0;
+void request_manager_stop(int) { manager_stop_signal = 1; }
+#endif
 
 float generated_range(std::size_t angle, std::uint64_t seq) {
   return 1.0f + static_cast<float>((angle + seq) % 100u) * 0.01f;
@@ -48,7 +68,7 @@ bool valid_scan(const Scan& scan) {
 }
 struct Options {
   std::string role;
-  std::string socket;
+  std::string endpoint;
   std::uint64_t samples{20};
 };
 Options parse(int argc, char** argv) {
@@ -57,7 +77,7 @@ Options parse(int argc, char** argv) {
     if (i + 1 >= argc) throw std::invalid_argument("option missing value");
     const std::string key = argv[i], value = argv[i + 1];
     if (key == "--role") o.role = value;
-    else if (key == "--socket") o.socket = value;
+    else if (key == "--socket" || key == "--shm-name") o.endpoint = value;
     else if (key == "--samples") {
       if (value.empty() || value[0] == '-')
         throw std::invalid_argument("samples must be positive");
@@ -67,10 +87,16 @@ Options parse(int argc, char** argv) {
         throw std::invalid_argument("samples out of range");
     } else throw std::invalid_argument("unknown option: " + key);
   }
+#if defined(ROBOTCORE_SENSOR_PSHM)
+  if (o.role != "source" && o.role != "bridge" &&
+      o.role != "sink" && o.role != "manager")
+    throw std::invalid_argument("role must be source, bridge, sink or manager");
+#else
   if (o.role != "source" && o.role != "bridge" && o.role != "sink")
     throw std::invalid_argument("role must be source, bridge or sink");
-  if (o.role != "source" && o.socket.empty())
-    throw std::invalid_argument("--socket required for IPC roles");
+#endif
+  if (o.role != "source" && o.endpoint.empty())
+    throw std::invalid_argument("endpoint path or SHM name is required");
   return o;
 }
 
@@ -106,19 +132,60 @@ private:
   rclcpp::TimerBase::SharedPtr timer_;
 };
 
-robotcore::Configuration ipc_config() {
+robotcore::Configuration sensor_transport_config() {
   robotcore::Configuration c;
+#if defined(ROBOTCORE_SENSOR_SHM)
+  c.transport = robotcore::TransportKind::shared_memory;
+#elif defined(ROBOTCORE_SENSOR_PSHM)
+  c.transport = robotcore::TransportKind::persistent_shared_memory;
+#else
   c.transport = robotcore::TransportKind::ipc;
+#endif
   c.max_payload_bytes = robotcore_ros::scan_codec::kMaxFrameBytes;
   c.queue_depth = 1;
+  c.reliable = true;
   return c;
 }
+
+std::unique_ptr<robotcore::Transport> make_transport(const Options& o, bool server) {
+#if defined(ROBOTCORE_SENSOR_SHM)
+  return std::make_unique<robotcore::SharedMemoryTransport>(
+      o.endpoint, server, sensor_transport_config());
+#elif defined(ROBOTCORE_SENSOR_PSHM)
+  return std::make_unique<robotcore::PersistentSharedMemoryTransport>(
+      o.endpoint, server, sensor_transport_config());
+#else
+  return std::make_unique<robotcore::UnixSocketTransport>(
+      o.endpoint, server, sensor_transport_config());
+#endif
+}
+
+#if defined(ROBOTCORE_SENSOR_PSHM)
+int run_manager(const Options& o) {
+  robotcore::PersistentRegionManager manager(
+      o.endpoint, robotcore_ros::scan_codec::kMaxFrameBytes);
+  auto status = manager.start();
+  if (!status) throw std::runtime_error("region manager start: " + status.detail);
+  status = manager.begin_session();
+  if (!status) throw std::runtime_error("region manager epoch: " + status.detail);
+  manager_stop_signal = 0;
+  std::signal(SIGTERM, request_manager_stop);
+  std::signal(SIGINT, request_manager_stop);
+  std::cout << "manager_ready_epoch=" << manager.epoch() << std::endl;
+  while (!manager_stop_signal)
+    std::this_thread::sleep_for(20ms);
+  status = manager.stop();
+  if (!status) throw std::runtime_error("region manager stop: " + status.detail);
+  return 0;
+}
+#endif
+
 int run_sink(const Options& o) {
-  robotcore::UnixSocketTransport sink(o.socket, true, ipc_config());
+  auto sink = make_transport(o, true);
   std::atomic<std::uint64_t> count{0};
   std::atomic<bool> invalid{false};
   std::uint64_t last_seq = 0; // callback worker only
-  const auto started = sink.start([&](robotcore::Message message) {
+  const auto started = sink->start([&](robotcore::Message message) {
     try {
       const Scan scan = robotcore_ros::scan_codec::decode(message.payload);
       if (!valid_scan(scan) ||
@@ -138,15 +205,15 @@ int run_sink(const Options& o) {
   while (count.load() < o.samples && !invalid &&
          std::chrono::steady_clock::now() < deadline)
     std::this_thread::sleep_for(10ms);
-  const auto result = sink.stop();
+  const auto result = sink->stop();
   if (!result) throw std::runtime_error("sink stop: " + result.detail);
   std::cout << "validated_native_scan_frames=" << count.load()
             << " invalid=" << invalid.load() << '\n';
   return !invalid && count >= o.samples ? 0 : 2;
 }
 int run_bridge(const Options& o, int argc, char** argv) {
-  robotcore::UnixSocketTransport sender(o.socket, false, ipc_config());
-  const auto started = sender.start([](robotcore::Message) {});
+  auto sender = make_transport(o, false);
+  const auto started = sender->start([](robotcore::Message) {});
   if (!started) throw std::runtime_error("bridge IPC start: " + started.detail);
   rclcpp::init(argc, argv);
   auto node = std::make_shared<rclcpp::Node>("robotcore_scan_bridge");
@@ -158,7 +225,7 @@ int run_bridge(const Options& o, int argc, char** argv) {
         try {
           const auto seq = static_cast<std::uint64_t>(scan->intensities[0]);
           const auto frame = robotcore_ros::scan_codec::encode(*scan);
-          if (!sender.publish({seq, frame})) { ++failed; return; }
+          if (!sender->publish({seq, frame})) { ++failed; return; }
           ++forwarded;
         } catch (const std::exception&) {
           ++failed;
@@ -166,7 +233,7 @@ int run_bridge(const Options& o, int argc, char** argv) {
       });
   (void)subscriber; // keep subscriber alive while spinning
   rclcpp::spin(node);
-  const auto stopped = sender.stop();
+  const auto stopped = sender->stop();
   rclcpp::shutdown();
   if (!stopped) throw std::runtime_error("bridge IPC stop failed");
   std::cout << "bridge_forwarded=" << forwarded << " errors=" << failed << '\n';
@@ -184,11 +251,14 @@ int run_source(const Options& o, int argc, char** argv) {
 int main(int argc, char** argv) {
   try {
     const auto o = parse(argc, argv);
+#if defined(ROBOTCORE_SENSOR_PSHM)
+    if (o.role == "manager") return run_manager(o);
+#endif
     if (o.role == "sink") return run_sink(o);
     if (o.role == "bridge") return run_bridge(o, argc, argv);
     return run_source(o, argc, argv);
   } catch (const std::exception& e) {
-    std::cerr << "sensor-to-IPC demo: " << e.what() << '\n';
+    std::cerr << "sensor-to-" << kBackendName << " demo: " << e.what() << '\n';
     return 1;
   }
 }

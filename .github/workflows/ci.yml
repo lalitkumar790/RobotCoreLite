@@ -13,6 +13,7 @@ jobs:
       - run: python3 -m unittest discover -s tests -v
       - run: bash -n scripts/run_benchmarks.sh
       - run: bash -n scripts/run_comparison.sh
+      - run: bash -n scripts/test_ros_sensor_bridge.sh
   ros-build:
     runs-on: ubuntu-24.04
     container:
@@ -69,45 +70,23 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           timeout 20s ros2 run robotcore_baseline scan_codec_test
-      - name: Real ROS 2 LaserScan to IPC cross-process functional integration
+      - name: Full ROS 2 LaserScan to Unix IPC integration
         shell: bash
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          set -eo pipefail
-          socket="/tmp/robotcore-native-scan-$$.sock"
-          bin="./install/robotcore_baseline/lib/robotcore_baseline/sensor_ipc_demo"
-          "$bin" --role sink --socket "$socket" --samples 20 > /tmp/robotcore-native-sink.log 2>&1 &
-          sink=$!
-          bridge=""
-          source_pid=""
-          cleanup() {
-            for pid in "$source_pid" "$bridge" "$sink"; do
-              if [[ -n "$pid" ]]; then
-                kill "$pid" 2>/dev/null || true
-                wait "$pid" 2>/dev/null || true
-              fi
-            done
-          }
-          trap cleanup EXIT
-          for i in $(seq 1 100); do
-            [[ -S "$socket" ]] && break
-            sleep 0.05
-          done
-          if [[ ! -S "$socket" ]]; then
-            cat /tmp/robotcore-native-sink.log >&2
-            exit 1
-          fi
-          "$bin" --role bridge --socket "$socket" > /tmp/robotcore-native-bridge.log 2>&1 &
-          bridge=$!
-          sleep 2
-          "$bin" --role source --samples 500 > /tmp/robotcore-native-source.log 2>&1 &
-          source_pid=$!
-          if ! wait "$sink"; then
-            cat /tmp/robotcore-native-sink.log >&2
-            cat /tmp/robotcore-native-bridge.log >&2
-            cat /tmp/robotcore-native-source.log >&2
-            exit 1
-          fi
-          sink=""
-          grep -q 'validated_native_scan_frames=20 invalid=0' /tmp/robotcore-native-sink.log
+          timeout 45s bash scripts/test_ros_sensor_bridge.sh ipc 20
+
+      - name: Full ROS 2 LaserScan to session SHM integration
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          timeout 45s bash scripts/test_ros_sensor_bridge.sh shm 50
+
+      - name: Full ROS 2 LaserScan to persistent SHM integration
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          timeout 45s bash scripts/test_ros_sensor_bridge.sh persistent_shm 50
