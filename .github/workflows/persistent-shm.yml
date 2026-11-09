@@ -11,7 +11,7 @@ jobs:
         run: |
           cmake -S robotcore_transports/persistent_shm -B build/pshm -DCMAKE_BUILD_TYPE=Debug
           cmake --build build/pshm --parallel
-      - name: Repeated crash and multi-session tests
+      - name: Repeated multi-session and fault-injection tests
         run: ctest --test-dir build/pshm --output-on-failure --repeat until-fail:15
       - name: Persistent SHM three-process functional benchmark smoke
         run: |
