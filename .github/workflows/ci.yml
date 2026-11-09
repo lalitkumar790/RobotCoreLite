@@ -70,23 +70,30 @@ jobs:
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
           timeout 20s ros2 run robotcore_baseline scan_codec_test
-      - name: Full ROS 2 LaserScan to Unix IPC integration
+      - name: Strict complete native LaserScan sequence over DDS (reference)
         shell: bash
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          timeout 45s bash scripts/test_ros_sensor_bridge.sh ipc 20
+          timeout 65s bash scripts/test_ros_sensor_bridge.sh dds 250 10
 
-      - name: Full ROS 2 LaserScan to session SHM integration
+      - name: Strict complete native LaserScan sequence over Unix IPC
         shell: bash
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          timeout 45s bash scripts/test_ros_sensor_bridge.sh shm 50
+          timeout 65s bash scripts/test_ros_sensor_bridge.sh ipc 250 10
 
-      - name: Full ROS 2 LaserScan to persistent SHM integration
+      - name: Strict complete native LaserScan sequence over bounded SHM
         shell: bash
         run: |
           source /opt/ros/jazzy/setup.bash
           source install/setup.bash
-          timeout 45s bash scripts/test_ros_sensor_bridge.sh persistent_shm 50
+          timeout 65s bash scripts/test_ros_sensor_bridge.sh shm 250 10
+
+      - name: Strict complete native LaserScan sequence over persistent SHM
+        shell: bash
+        run: |
+          source /opt/ros/jazzy/setup.bash
+          source install/setup.bash
+          timeout 65s bash scripts/test_ros_sensor_bridge.sh persistent_shm 250 10

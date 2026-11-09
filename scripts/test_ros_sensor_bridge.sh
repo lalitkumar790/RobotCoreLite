@@ -2,16 +2,24 @@
 # Cross-process ROS 2 LaserScan CDR delivery via each native transport.
 # Functional test only: not a benchmark or evidence of latency advantage.
 set -euo pipefail
-if (( $# < 1 || $# > 2 )); then
-  echo "usage: test_ros_sensor_bridge.sh ipc|shm|persistent_shm [frames]" >&2
+if (( $# < 1 || $# > 3 )); then
+  echo "usage: test_ros_sensor_bridge.sh dds|ipc|shm|persistent_shm [frames] [period_ms]" >&2
   exit 2
 fi
 mode="$1"
 frames="${2:-20}"
+period_ms="${3:-20}"
 if [[ ! "$frames" =~ ^[1-9][0-9]*$ ]] || (( frames > 1000 )); then
   echo "frames must be between 1 and 1000" >&2; exit 2
 fi
+if [[ ! "$period_ms" =~ ^[1-9][0-9]*$ ]] || (( period_ms > 1000 )); then
+  echo "period_ms must be between 1 and 1000" >&2; exit 2
+fi
 case "$mode" in
+  dds)
+    binary="sensor_dds_demo"
+    flag=""
+    endpoint="" ;;
   ipc)
     binary="sensor_ipc_demo"
     flag="--socket"
@@ -67,30 +75,53 @@ if [[ "$mode" == persistent_shm ]]; then
     exit 1
   fi
 fi
-"$bin" --role sink "$flag" "$endpoint" --samples "$frames" > "$logdir/sink.log" 2>&1 &
+if [[ "$mode" == dds ]]; then
+  "$bin" --role sink --samples "$frames" --period-ms "$period_ms" > "$logdir/sink.log" 2>&1 &
+else
+  "$bin" --role sink "$flag" "$endpoint" --samples "$frames" --period-ms "$period_ms" > "$logdir/sink.log" 2>&1 &
+fi
 sink=$!
 for i in $(seq 1 100); do
+  if [[ "$mode" == dds ]] && kill -0 "$sink" 2>/dev/null; then break; fi
   if [[ "$mode" == ipc && -S "$endpoint" ]]; then break; fi
-  if [[ "$mode" != ipc && -e "$shm_file" ]]; then break; fi
+  if [[ "$mode" != ipc && "$mode" != dds && -e "$shm_file" ]]; then break; fi
   if ! kill -0 "$sink" 2>/dev/null; then break; fi
   sleep 0.05
 done
-if [[ "$mode" == ipc && ! -S "$endpoint" ]] ||
-   [[ "$mode" != ipc && ! -e "$shm_file" ]]; then
+endpoint_ready=true
+case "$mode" in
+  dds) kill -0 "$sink" 2>/dev/null || endpoint_ready=false ;;
+  ipc) [[ -S "$endpoint" ]] || endpoint_ready=false ;;
+  *) [[ -e "$shm_file" ]] || endpoint_ready=false ;;
+esac
+if [[ "$endpoint_ready" != true ]]; then
   echo "Native scan sink failed to initialize:" >&2
   cat "$logdir/sink.log" >&2
   exit 1
 fi
-"$bin" --role bridge "$flag" "$endpoint" > "$logdir/bridge.log" 2>&1 &
-bridge=$!
+if [[ "$mode" != dds ]]; then
+  "$bin" --role bridge "$flag" "$endpoint" --period-ms "$period_ms" > "$logdir/bridge.log" 2>&1 &
+  bridge=$!
+fi
 sleep 2
-if ! kill -0 "$bridge" 2>/dev/null; then
+if [[ "$mode" != dds ]] && ! kill -0 "$bridge" 2>/dev/null; then
   echo "Native scan bridge exited unexpectedly:" >&2
   cat "$logdir/bridge.log" >&2
   exit 1
 fi
-"$bin" --role source --samples 500 > "$logdir/source.log" 2>&1 &
+"$bin" --role source --samples "$frames" --period-ms "$period_ms" > "$logdir/source.log" 2>&1 &
 source_pid=$!
+if ! wait "$source_pid"; then
+  echo "LaserScan publisher failed to emit all requested frames ($mode):" >&2
+  cat "$logdir/source.log" "$logdir/sink.log" >&2
+  exit 1
+fi
+source_pid=""
+if ! grep -q "^published_native_scan_frames=$frames expected=$frames$" "$logdir/source.log"; then
+  echo "Publisher completion count invalid ($mode)" >&2
+  cat "$logdir/source.log" >&2
+  exit 1
+fi
 if ! wait "$sink"; then
   echo "Native LaserScan delivery failed ($mode):" >&2
   cat "$logdir/sink.log" "$logdir/bridge.log" "$logdir/source.log" >&2
@@ -98,18 +129,17 @@ if ! wait "$sink"; then
   exit 1
 fi
 sink=""
-if ! grep -q "^validated_native_scan_frames=$frames invalid=0$" "$logdir/sink.log"; then
+if ! grep -q "^validated_native_scan_frames=$frames expected=$frames invalid=0$" "$logdir/sink.log"; then
   echo "Sink did not verify all expected frames ($mode)" >&2
   cat "$logdir/sink.log" >&2
   exit 1
 fi
 # The manager must outlive both attached persistent endpoints.
-kill -TERM "$bridge" 2>/dev/null || true
-wait "$bridge" 2>/dev/null || true
-bridge=""
-kill -TERM "$source_pid" 2>/dev/null || true
-wait "$source_pid" 2>/dev/null || true
-source_pid=""
+if [[ -n "$bridge" ]]; then
+  kill -TERM "$bridge" 2>/dev/null || true
+  wait "$bridge" 2>/dev/null || true
+  bridge=""
+fi
 if [[ -n "$manager" ]]; then
   kill -TERM "$manager" 2>/dev/null || true
   if ! wait "$manager"; then
@@ -119,9 +149,9 @@ if [[ -n "$manager" ]]; then
   fi
   manager=""
 fi
-if [[ "$mode" != ipc && -e "$shm_file" ]]; then
+if [[ "$mode" != ipc && "$mode" != dds && -e "$shm_file" ]]; then
   echo "Shared-memory name was not released: $shm_file" >&2
   exit 1
 fi
 cat "$logdir/sink.log"
-echo "transport=$mode full_laserscan_frames=$frames valid=1"
+echo "transport=$mode full_laserscan_frames=$frames period_ms=$period_ms valid=1"

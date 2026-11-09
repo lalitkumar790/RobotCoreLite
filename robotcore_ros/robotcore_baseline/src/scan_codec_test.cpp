@@ -1,6 +1,7 @@
 // Integration-level unit coverage for the full LaserScan CDR IPC envelope.
 // Tests execute with the same Jazzy build as the three-process bridge.
 #include "robotcore_ros/scan_codec.hpp"
+#include "robotcore_ros/scan_sequence.hpp"
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/laser_scan.hpp>
 #include <cstddef>
@@ -98,6 +99,24 @@ void test_codec() {
   require(equal(full_scan, codec::decode(codec::encode(full_scan))),
           "360-beam LaserScan lost intensities/ranges");
 }
+void test_strict_sequence() {
+  robotcore_ros::StrictScanSequence tracker(3);
+  require(!tracker.complete(), "empty sequence incorrectly marked complete");
+  require(!tracker.accept(0), "zero sequence should be rejected");
+  require(!tracker.accept(2), "missing first frame should be rejected");
+  require(tracker.accept(1), "first frame not accepted");
+  require(!tracker.accept(1), "duplicate frame should be rejected");
+  require(!tracker.accept(3), "skipped frame should be rejected");
+  require(tracker.accept(2), "second frame not accepted");
+  require(tracker.accept(3), "third frame not accepted");
+  require(tracker.complete(), "complete sequence not recognized");
+  require(!tracker.accept(4), "out-of-range frame should be rejected");
+  require(tracker.accepted() == 3, "rejected frames changed sequence count");
+  bool rejected_zero_expected = false;
+  try { robotcore_ros::StrictScanSequence invalid(0); (void)invalid; }
+  catch (const std::invalid_argument&) { rejected_zero_expected = true; }
+  require(rejected_zero_expected, "zero expected count accepted");
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -105,6 +124,7 @@ int main(int argc, char** argv) {
   int exit_code = 0;
   try {
     test_codec();
+    test_strict_sequence();
     std::cout << "full_laserscan_codec_roundtrip=ok" << std::endl;
   } catch (const std::exception& e) {
     std::cerr << "scan codec test: " << e.what() << std::endl;
