@@ -51,8 +51,8 @@ ctest --test-dir build/ipc --output-on-failure
 ```
 This validates functional framing, sequencing and lifecycle; it does **not** measure IPC speed. See [IPC design and limitations](docs/ipc-transport.md).
 
-### Common DDS, IPC and shared-memory benchmark harness
-All three executables compile the same stop-and-wait C++ test implementation; the shared-memory candidate has one slot per direction and uses payload copies. For Ubuntu 24.04 and Jazzy:
+### Common four-transport comparison harness
+All four transport executables compile the same stop-and-wait C++ test implementation. Both shared-memory variants have one slot per direction and use payload copies. The persistent mode additionally starts a separate manager process for each RTT experiment. For Ubuntu 24.04 and Jazzy:
 ```bash
 source /opt/ros/jazzy/setup.bash
 bash scripts/run_comparison.sh
@@ -80,7 +80,7 @@ cmake --build build/pshm --parallel
 ctest --test-dir build/pshm --output-on-failure
 ```
 
-See [persistent SHM design and limitations](docs/persistent-shm-design.md). The fourth mode is **not** yet integrated into the common comparison runner.
+See [persistent SHM design and limitations](docs/persistent-shm-design.md). The fourth mode is integrated into the common comparison runner for **RTT functional validation**. The runner starts a fresh region manager per measured trial, so it does **not** measure warm-restart allocation savings.
 
 ### Research plan
 1. Measure baseline DDS under controlled conditions.

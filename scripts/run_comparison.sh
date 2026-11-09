@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Controlled cross-process DDS/IPC/SHM runner. CI smoke is not research evidence.
+# Controlled cross-process four-transport runner. CI smoke is not research evidence.
 set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 EXPECTED="$(printenv EXPECTED_ROS_DISTRO || echo jazzy)"
@@ -42,6 +42,8 @@ done
  cmake --build build/comparison-ipc --parallel
  cmake -S robotcore_transports/shared_memory -B build/comparison-shm -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
  cmake --build build/comparison-shm --parallel
+ cmake -S robotcore_transports/persistent_shm -B build/comparison-persistent -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=OFF
+ cmake --build build/comparison-persistent --parallel
 )
 set +u
 source "$ROOT/install/setup.bash"
@@ -52,13 +54,20 @@ REPORT="$ROOT/results/reports/comparison-$STAMP"
 mkdir -p "$OUT" "$REPORT"
 SOCKDIR="$(mktemp -d "${TMPDIR:-/tmp}/robotcore-compare.XXXXXX")"
 SOCKET="$SOCKDIR/transport.sock"
-SHM_NAME="/robotcore-compare-${STAMP}-$$"
+SHM_NAME="/robotcore-compare-${STAMP}-$"
+PSHM_NAME="/robotcore-persistent-compare-${STAMP}-$$"
+manager=""
 responder=""
 cleanup() {
   if [[ -n "$responder" ]]; then
     kill "$responder" 2>/dev/null || true
     wait "$responder" 2>/dev/null || true
     responder=""
+  fi
+  if [[ -n "$manager" ]]; then
+    kill "$manager" 2>/dev/null || true
+    wait "$manager" 2>/dev/null || true
+    manager=""
   fi
   rm -f "$SOCKET"
 }
@@ -82,10 +91,11 @@ trap finish EXIT
   fi
 } > "$OUT/environment.txt"
 for ((run=1; run<=RUNS; ++run)); do
-  case $((run % 3)) in
-    1) transports=(dds ipc shared_memory) ;;
-    2) transports=(ipc shared_memory dds) ;;
-    0) transports=(shared_memory dds ipc) ;;
+  case $((run % 4)) in
+    1) transports=(dds ipc shared_memory persistent_shared_memory) ;;
+    2) transports=(ipc shared_memory persistent_shared_memory dds) ;;
+    3) transports=(shared_memory persistent_shared_memory dds ipc) ;;
+    0) transports=(persistent_shared_memory dds ipc shared_memory) ;;
   esac
   for payload in $PAYLOADS; do
     for mode in "${transports[@]}"; do
@@ -93,8 +103,10 @@ for ((run=1; run<=RUNS; ++run)); do
         cmd=("$ROOT/install/robotcore_baseline/lib/robotcore_baseline/transport_bench_dds")
       elif [[ "$mode" == ipc ]]; then
         cmd=("$ROOT/build/comparison-ipc/transport_bench_ipc")
-      else
+      elif [[ "$mode" == shared_memory ]]; then
         cmd=("$ROOT/build/comparison-shm/transport_bench_shm")
+      else
+        cmd=("$ROOT/build/comparison-persistent/transport_bench_persistent_shm")
       fi
       label="${STAMP}_${mode}_${payload}_r${run}"
       csv="$OUT/$label.csv"
@@ -102,16 +114,33 @@ for ((run=1; run<=RUNS; ++run)); do
       extra=()
       if [[ "$mode" == ipc ]]; then extra=(--socket "$SOCKET"); fi
       if [[ "$mode" == shared_memory ]]; then extra=(--shm-name "$SHM_NAME"); fi
+      if [[ "$mode" == persistent_shared_memory ]]; then
+        extra=(--shm-name "$PSHM_NAME")
+        # Region manager is a separate OS process and is started before
+        # both endpoints. Its setup cost is excluded from per-message RTT.
+        "${cmd[@]}" --role manager "${common[@]}" "${extra[@]}" > "$OUT/$label.manager.log" 2>&1 &
+        manager=$!
+        for ((i=0; i<100; ++i)); do
+          grep -q 'manager_ready_epoch=1' "$OUT/$label.manager.log" && break
+          if ! kill -0 "$manager" 2>/dev/null; then break; fi
+          sleep 0.05
+        done
+        if ! grep -q 'manager_ready_epoch=1' "$OUT/$label.manager.log"; then
+          echo "Persistent SHM manager failed: $OUT/$label.manager.log" >&2; exit 1
+        fi
+      fi
       "${cmd[@]}" --role responder "${common[@]}" "${extra[@]}" > "$OUT/$label.server.log" 2>&1 &
       responder=$!
       if [[ "$mode" == dds ]]; then sleep 3; else
         for ((i=0; i<100; ++i)); do
           if [[ "$mode" == ipc && -S "$SOCKET" ]]; then break; fi
           if [[ "$mode" == shared_memory && -e "/dev/shm/${SHM_NAME#/}" ]]; then break; fi
+          if [[ "$mode" == persistent_shared_memory && -e "/dev/shm/${PSHM_NAME#/}" ]]; then break; fi
           sleep 0.05
         done
         if [[ "$mode" == ipc && ! -S "$SOCKET" ]] ||
-           [[ "$mode" == shared_memory && ! -e "/dev/shm/${SHM_NAME#/}" ]]; then
+           [[ "$mode" == shared_memory && ! -e "/dev/shm/${SHM_NAME#/}" ]] ||
+           [[ "$mode" == persistent_shared_memory && ! -e "/dev/shm/${PSHM_NAME#/}" ]]; then
           echo "Local transport server failed to bind: $OUT/$label.server.log" >&2; exit 1
         fi
       fi

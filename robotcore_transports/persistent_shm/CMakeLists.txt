@@ -14,3 +14,8 @@ if(BUILD_TESTING)
   add_test(NAME persistent_session_lifecycle COMMAND persistent_shm_test)
   set_tests_properties(persistent_session_lifecycle PROPERTIES TIMEOUT 30)
 endif()
+
+add_executable(transport_bench_persistent_shm ../../benchmarks/latency/transport_benchmark.cpp)
+target_compile_definitions(transport_bench_persistent_shm PRIVATE ROBOTCORE_BENCH_PSHM)
+target_link_libraries(transport_bench_persistent_shm PRIVATE robotcore_persistent_shm)
+target_compile_options(transport_bench_persistent_shm PRIVATE -Wall -Wextra -Wpedantic -Werror)
