@@ -242,6 +242,9 @@ Status SharedMemoryTransport::start(ReceiveCallback callback) {
 }
 
 Status SharedMemoryTransport::publish(const Message& message) {
+  // Keep mapping, pidfd, slot semaphores and session data alive until
+  // the publish attempt finishes, including semaphore wait timeout paths.
+  std::lock_guard<std::mutex> publish_lock(publish_mutex_);
   if (!mapping_) return Status::failure(Error::not_started, "shared-memory endpoint not started");
   if (!server_ && !owner_alive())
     return Status::failure(Error::closed, "shared-memory server exited or closed");
@@ -361,7 +364,12 @@ Status SharedMemoryTransport::stop() {
   running_ = false;
   if (worker_.joinable()) worker_.join();
   callback_ = {};
-  release_resources();
+  // Receiver is joined first; it may publish from a callback. Only after
+  // its exit can we wait for in-flight publishers and release the mapping.
+  {
+    std::lock_guard<std::mutex> publish_lock(publish_mutex_);
+    release_resources();
+  }
   return Status::success();
 }
 } // namespace robotcore
