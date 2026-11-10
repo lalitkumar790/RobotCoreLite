@@ -44,3 +44,8 @@ add_executable(transport_bench_shm ../../benchmarks/latency/transport_benchmark.
 target_compile_definitions(transport_bench_shm PRIVATE ROBOTCORE_BENCH_SHM)
 target_link_libraries(transport_bench_shm PRIVATE robotcore_shared_memory)
 target_compile_options(transport_bench_shm PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+# Local SHM-only performance research executable. Results are never CI speedup claims.
+add_executable(shm_path_bench ../../benchmarks/latency/shm_path_benchmark.cpp)
+target_link_libraries(shm_path_bench PRIVATE robotcore_shared_memory)
+target_compile_options(shm_path_bench PRIVATE -Wall -Wextra -Wpedantic -Werror)
