@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -20,10 +21,6 @@ std::atomic<bool> active{true};
 void terminate(int) { active = false; }
 std::uint8_t pattern(std::uint64_t seq, std::size_t index) {
   return static_cast<std::uint8_t>((seq * 31U + index * 17U) & 255U);
-}
-void check(const std::uint8_t* p, std::size_t len, std::uint64_t seq) {
-  for (std::size_t j = 0; j < len; ++j)
-    if (p[j] != pattern(seq, j)) throw std::runtime_error("payload corruption");
 }
 std::size_t number(const char* text) {
   const std::string s(text);
@@ -58,7 +55,7 @@ int main(int argc, char** argv) {
     robotcore::SharedMemoryTransport transport(name, responder, cfg);
     std::mutex mutex;
     std::condition_variable wake;
-    std::uint64_t received = 0;
+    std::uint64_t received = std::numeric_limits<std::uint64_t>::max();
     bool corrupt = false;
     auto reply = [&](std::uint64_t seq, const std::uint8_t* data, std::size_t length) {
       // Validation belongs to the measured application callback in BOTH modes.
