@@ -49,3 +49,8 @@ target_compile_options(transport_bench_shm PRIVATE -Wall -Wextra -Wpedantic -Wer
 add_executable(shm_path_bench ../../benchmarks/latency/shm_path_benchmark.cpp)
 target_link_libraries(shm_path_bench PRIVATE robotcore_shared_memory)
 target_compile_options(shm_path_bench PRIVATE -Wall -Wextra -Wpedantic -Werror)
+
+# Cross-process load experiment; no performance assertion in CI.
+add_executable(shm_load_bench ../../benchmarks/latency/shm_load_benchmark.cpp)
+target_link_libraries(shm_load_bench PRIVATE robotcore_shared_memory)
+target_compile_options(shm_load_bench PRIVATE -Wall -Wextra -Wpedantic -Werror)
