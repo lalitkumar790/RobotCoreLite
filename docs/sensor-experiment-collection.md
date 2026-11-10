@@ -50,3 +50,31 @@ The suite reports a **per-run distribution of application-visible end-to-end del
 - The deterministic test fixture in `tests/test_sensor_experiment_runner.py` validates only collection/reporting behavior; it does not emulate ROS or establish performance numbers.
 
 Follow up with a sustained-load publication experiment, ROS bag/real LiDAR data, and a robot application test before any research performance claim.
+
+## Run-level uncertainty: completed collections only
+
+After all trials succeed, the collector automatically runs `scripts/analyze_sensor_runs.py` and writes `run_uncertainty.json` and `run_uncertainty.md`. The analyzer checks the manifest against **every round/mode**, per-run status, frame count, unmodified raw source and sink monotonic timestamps, and paired observations. It refuses failed/incomplete datasets, duplicate observations, nonfinite timing metrics or mismatched summaries.
+
+The output treats a **whole experimental round**—one observation for each transport—as the paired resampling unit, not each individual sensor frame. For every native transport, it calculates a per-round *median application-visible delay difference* relative to the DDS/CDR bridge. With at least four complete rounds, a seeded, exploratory 95% percentile bootstrap interval is shown for the **mean of these paired differences**. Fewer than four rounds yield no interval. The interval is sensitive to the few available runs; even four rounds, or an interval not crossing zero, must **not** be advertised as scientific proof of speedup or a nominally calibrated confidence guarantee. The output explicitly sets `performance_claim: false`.
+
+To independently re-analyze a retained collection:
+
+```bash
+python3 scripts/analyze_sensor_runs.py results/sensor-experiments/<collection-dir> --seed 790 --resamples 4000
+```
+
+Use independent collection blocks/days, sufficient replication, and a prespecified hypothesis/analysis plan before submitting comparative results for publication.
+
+## Optional per-process CPU and RSS sampling
+
+For **supplementary** resource observations, run with:
+
+```bash
+python3 scripts/run_sensor_experiment.py \
+  --repetitions 4 --frames 250 --period-ms 10 --seed 790 \
+  --profile-resources --resource-period-ms 100
+```
+
+The collector records PID/start-time-verified Linux `/proc` observations for the source, bridge and sink in each three-process arm, plus the persistent region manager in that arm. It retains `process_ids.csv`, `resource_samples.csv` and `resource_summary.json` per run. For each role it reports the **observed** CPU core equivalents (change in user+system CPU seconds divided by that role's observation-window duration) and sampled maximum resident memory. Processes with fewer than two samples have **no CPU-rate estimate**. The resource sampling window includes process startup, ROS discovery and teardown with different role lifetimes; it is **not** a matched steady-state CPU-cost or exact peak-memory measurement. Sampling itself perturbs timing. To avoid conflation, compare both unprofiled and separately profiled collections rather than using profiled run times as primary unperturbed performance results.
+
+Tests of these collectors use *explicitly synthetic fixture timestamps*. They verify bookkeeping, not ROS 2 performance.

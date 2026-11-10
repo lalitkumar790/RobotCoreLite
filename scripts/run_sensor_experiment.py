@@ -187,8 +187,11 @@ def describe_completeness(records, expected_total):
 
 
 def run_experiment(output_root, runner, repetitions, frames, period_ms,
-                   seed, timeout_seconds, modes=MODES):
+                   seed, timeout_seconds, modes=MODES,
+                   profile_resources=False, resource_period_ms=100):
     plan = plan_rounds(modes, repetitions, seed)
+    if profile_resources and not 20 <= resource_period_ms <= 5000:
+        raise ValueError("resource sampling period must be 20..5000ms")
     output_root = pathlib.Path(output_root)
     output_root.mkdir(parents=True, exist_ok=True)
     output = output_root / (
@@ -207,6 +210,8 @@ def run_experiment(output_root, runner, repetitions, frames, period_ms,
         "environment": environment_manifest(),
         "status": "in_progress",
         "methodology": "No unverified performance claims; generated LaserScan",
+        "resource_sampling_enabled": bool(profile_resources),
+        "resource_sampling_period_ms": resource_period_ms if profile_resources else None,
     }
     (output / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
     records = []
@@ -220,6 +225,10 @@ def run_experiment(output_root, runner, repetitions, frames, period_ms,
                 dest.mkdir()
                 env = os.environ.copy()
                 env["SENSOR_EVENTS_DIR"] = str(dest.resolve())
+                if profile_resources:
+                    env["SENSOR_PROFILE_PROCESSES"] = "1"
+                else:
+                    env.pop("SENSOR_PROFILE_PROCESSES", None)
                 command = ["bash", str(runner), mode, str(frames), str(period_ms)]
                 start = time.monotonic()
                 status = {"round": round_index, "position": position,
@@ -228,20 +237,32 @@ def run_experiment(output_root, runner, repetitions, frames, period_ms,
                 (dest / "run_status.json").write_text(json.dumps(status, indent=2) + "\n")
                 try:
                     with (dest / "runner.log").open("w") as log:
-                        child = subprocess.Popen(
-                            command, stdout=log, stderr=subprocess.STDOUT,
-                            cwd=pathlib.Path(__file__).resolve().parent.parent,
-                            env=env, start_new_session=True)
+                        sampler = None
+                        if profile_resources:
+                            if __package__:
+                                from .sample_sensor_resources import ResourceSampler
+                            else:
+                                from sample_sensor_resources import ResourceSampler
+                            sampler = ResourceSampler(dest, mode, resource_period_ms)
+                            sampler.start()
                         try:
-                            code = child.wait(timeout=timeout_seconds)
-                        except subprocess.TimeoutExpired:
-                            os.killpg(child.pid, signal.SIGTERM)
+                            child = subprocess.Popen(
+                                command, stdout=log, stderr=subprocess.STDOUT,
+                                cwd=pathlib.Path(__file__).resolve().parent.parent,
+                                env=env, start_new_session=True)
                             try:
-                                child.wait(timeout=3)
+                                code = child.wait(timeout=timeout_seconds)
                             except subprocess.TimeoutExpired:
-                                os.killpg(child.pid, signal.SIGKILL)
-                                child.wait()
-                            raise RuntimeError(f"{mode}: runner timed out")
+                                os.killpg(child.pid, signal.SIGTERM)
+                                try:
+                                    child.wait(timeout=3)
+                                except subprocess.TimeoutExpired:
+                                    os.killpg(child.pid, signal.SIGKILL)
+                                    child.wait()
+                                raise RuntimeError(f"{mode}: runner timed out")
+                        finally:
+                            if sampler is not None:
+                                sampler.stop()
                     if code != 0:
                         raise RuntimeError(f"{mode}: runner exited {code} (see {dest}/runner.log)")
                     record = _validated_run(dest, mode, frames, period_ms)
@@ -276,6 +297,22 @@ def run_experiment(output_root, runner, repetitions, frames, period_ms,
             writer.writerows(records)
         (output / "report.md").write_text(
             describe_completeness(records, expected_total))
+    if manifest["status"] == "completed":
+        # Only analyze a complete balanced collection. Fail closed if any
+        # raw stream or run summary changes after first-pass validation.
+        if __package__:
+            from .analyze_sensor_runs import write_analysis
+        else:
+            from analyze_sensor_runs import write_analysis
+        try:
+            reference = "dds_bridge" if "dds_bridge" in modes else modes[0]
+            write_analysis(output, reference=reference, seed=seed)
+        except Exception as exc:
+            manifest["status"] = "failed"
+            manifest["error"] = f"post-collection validation failed: {exc}"
+            (output / "manifest.json").write_text(
+                json.dumps(manifest, indent=2) + "\n")
+            raise
     return output
 
 
@@ -288,6 +325,9 @@ def main():
     parser.add_argument("--timeout-seconds", type=int, default=90)
     parser.add_argument("--output-root", default="results/sensor-experiments")
     parser.add_argument("--runner", default="scripts/test_ros_sensor_bridge.sh")
+    parser.add_argument("--profile-resources", action="store_true",
+                        help="Enable perturbing per-process Linux /proc sampling")
+    parser.add_argument("--resource-period-ms", type=int, default=100)
     args = parser.parse_args()
     if not 1 <= args.repetitions <= 100:
         parser.error("repetitions must be between 1 and 100")
@@ -298,9 +338,13 @@ def main():
     runner = pathlib.Path(args.runner).resolve()
     if not runner.is_file():
         parser.error(f"runner not found: {runner}")
+    if args.profile_resources and not 20 <= args.resource_period_ms <= 5000:
+        parser.error("--resource-period-ms must be 20..5000")
     output = run_experiment(args.output_root, runner, args.repetitions,
                             args.frames, args.period_ms, args.seed,
-                            args.timeout_seconds)
+                            args.timeout_seconds,
+                            profile_resources=args.profile_resources,
+                            resource_period_ms=args.resource_period_ms)
     print("Completed observation collection:", output)
 
 
