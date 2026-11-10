@@ -143,7 +143,7 @@ int main(int argc, char** argv) {
       return 0;
     }
     out << "mode,seq,payload_bytes,source_monotonic_ns,publish_duration_us,status\n";
-    std::vector<std::uint8_t> owned(bytes);
+    // Reuse owned payload storage, avoiding an unrelated per-frame allocation.\n    robotcore::Message owned_msg;\n    owned_msg.payload.resize(bytes);
     for (std::size_t seq = 1; seq <= frames && running; ++seq) {
       // Source time is taken before the transport API: delivery_us is an
       // application-intent-to-callback latency INCLUDING producer backpressure.
@@ -156,9 +156,9 @@ int main(int argc, char** argv) {
           status = loan.commit(seq, bytes);
         }
       } else {
-        fill(owned.data(), bytes, seq, source);
-        robotcore::Message msg{seq, owned};
-        status = transport.publish(msg);
+        owned_msg.sequence = seq;
+        fill(owned_msg.payload.data(), bytes, seq, source);
+        status = transport.publish(owned_msg);
       }
       const auto after = now_ns();
       out << mode << ',' << seq << ',' << bytes << ',' << source << ','
