@@ -143,7 +143,8 @@ int main(int argc, char** argv) {
       return 0;
     }
     out << "mode,seq,payload_bytes,source_monotonic_ns,publish_duration_us,status\n";
-    // Reuse owned payload storage, avoiding an unrelated per-frame allocation.\n    robotcore::Message owned_msg;\n    owned_msg.payload.resize(bytes);
+    // Reuse owned payload storage, avoiding an unrelated per-frame allocation.
+    robotcore::Message owned_msg;\n    owned_msg.payload.resize(bytes);
     for (std::size_t seq = 1; seq <= frames && running; ++seq) {
       // Source time is taken before the transport API: delivery_us is an
       // application-intent-to-callback latency INCLUDING producer backpressure.
