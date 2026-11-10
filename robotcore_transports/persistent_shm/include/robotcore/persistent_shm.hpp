@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <string>
 #include <thread>
+#include <mutex>
 
 namespace robotcore {
 
@@ -49,6 +50,9 @@ private:
   ReceiveCallback callback_;
   std::atomic<bool> running_{false};
   std::thread worker_;
+  // Serialize publishes and prevent stop() from unmapping a live publisher.
+  // Do NOT hold this mutex while joining the receiver thread: a callback may publish.
+  std::mutex publish_mutex_;
   void* mapping_{nullptr};
   std::size_t mapping_size_{0};
   int fd_{-1};

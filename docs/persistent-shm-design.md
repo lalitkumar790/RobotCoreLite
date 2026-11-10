@@ -58,3 +58,11 @@ CI tests only compilation, the smoke CSV schema and report generation. Neither a
 A separate crash-injection test attaches a real client in a child process, acquires the outbound `free` semaphore and writes an **uncommitted, incomplete slot header** without posting the `filled` semaphore. While the writer is alive, `PersistentRegionManager::begin_session()` must refuse to reset the region. The test kills the writer with `SIGKILL`, reaps the process, explicitly begins a new epoch, and verifies a subsequent request/reply does not deliver the abandoned frame.
 
 This checks one deliberately constructed crash window, **not** exhaustive crash consistency. It does not prove automatic recovery or correct behavior for every possible concurrent publish/stop interleaving.
+
+## Concurrent publish/stop lifetime guard
+
+Both Linux SHM endpoint implementations now serialize each `publish()` against final mapping release in `stop()`. The shutdown path first marks the endpoint stopped and **joins the receive worker without holding the publish mutex** (a receive callback may itself call `publish()`). It then acquires the publish mutex, waits for any blocked publisher to leave the semaphore wait, and only then clears the lease/unmaps memory. This prevents a same-object `stop()` from unmapping a slot semaphore under an in-flight local publisher.
+
+A shared test source creates a receiver callback that intentionally blocks, fills the sender's single-slot buffer, and stops the sender concurrently with a third, blocked publication. Each backend repeats the check twelve times in normal CI and under ASan/UBSan. The blocked publication must fail and a subsequent publish on the stopped endpoint must not succeed.
+
+**Scope:** This is not a claim that arbitrary lifecycle concurrency is safe: callers must still serialize `start()`, simultaneous `stop()` calls, destruction and manager session resets. Stop must not be invoked inside a transport receive callback. External process death, callback exceptions, and cross-process synchronization remain separately tested and constrained; the publisher mutex is per endpoint and is not a cross-process lock. A publish operation already committed immediately before shutdown can still be in flight at the peer.

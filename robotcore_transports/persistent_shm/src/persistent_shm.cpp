@@ -328,6 +328,9 @@ Status PersistentSharedMemoryTransport::start(ReceiveCallback callback) {
 }
 
 Status PersistentSharedMemoryTransport::publish(const Message& message) {
+  // Keep mapping, pidfd, slot semaphores and session data alive until
+  // the publish attempt finishes, including semaphore wait timeout paths.
+  std::lock_guard<std::mutex> publish_lock(publish_mutex_);
   if (!mapping_) return Status::failure(Error::not_started, "transport not attached");
   if (!manager_alive()) return Status::failure(Error::closed, "manager or session ended");
   if (!running_) return Status::failure(Error::not_started, "transport is stopped");
@@ -414,22 +417,26 @@ Status PersistentSharedMemoryTransport::stop() {
     return Status::failure(Error::invalid_argument, "stop forbidden inside callback");
   running_ = false;
   if (worker_.joinable()) worker_.join();
-  if (mapping_ && fd_ >= 0 && lock_file(fd_)) {
-    auto* region = static_cast<Region*>(mapping_);
-    const int role = server_ ? 0 : 1;
-    auto& lease = region->leases[role];
-    if (region->epoch == epoch_ && lease.pid == static_cast<std::uint32_t>(::getpid()) &&
-        lease.start_ticks == identity_ticks_) {
-      lease.pid = 0;
-      lease.start_ticks = 0;
-      // "seen" deliberately remains set until manager begins next epoch.
-    }
-    unlock_file(fd_);
-  }
   callback_ = {};
-  release_resources();
-  epoch_ = 0;
-  identity_ticks_ = 0;
+  // Releasing leases / unmapping only after all publishes have drained
+  // avoids a race with a thread currently waiting on the region semaphore.
+  {
+    std::lock_guard<std::mutex> publish_lock(publish_mutex_);
+    if (mapping_ && fd_ >= 0 && lock_file(fd_)) {
+      auto* region = static_cast<Region*>(mapping_);
+      const int role = server_ ? 0 : 1;
+      auto& lease = region->leases[role];
+      if (region->epoch == epoch_ && lease.pid == static_cast<std::uint32_t>(::getpid()) &&
+          lease.start_ticks == identity_ticks_) {
+        lease.pid = 0;
+        lease.start_ticks = 0;
+      }
+      unlock_file(fd_);
+    }
+    release_resources();
+    epoch_ = 0;
+    identity_ticks_ = 0;
+  }
   return Status::success();
 }
 } // namespace robotcore

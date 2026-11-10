@@ -129,3 +129,7 @@ Design: [transport API](docs/transport-api.md) · [architecture](docs/architectu
 
 ## License
 Apache-2.0; see LICENSE.
+
+### Shared-memory publisher shutdown race regression
+
+Both SHM transports now protect mapping teardown against a concurrently blocked `publish()` call. Dedicated 12-round regression tests (also in native ASan/UBSan CI) exercise stop-while-publish-waits on the one-slot buffer. This guards a potential local use-after-unmap but does not make simultaneous `start()`/`stop()` or destruction safe, nor does it provide automatic cross-process recovery; see [persistent transport caveats](docs/persistent-shm-design.md).

@@ -4,9 +4,11 @@
 #include <cstdint>
 #include <string>
 #include <thread>
+#include <mutex>
 namespace robotcore {
 // Linux POSIX shm with one server/client and two directional, bounded slots.
-// Lifecycle methods are not concurrent-safe with publish. Do not stop in a callback.
+// stop() coordinates with concurrent publish() before unmapping. Do not stop in a callback.
+// start() and simultaneous stop() calls still require external serialization.
 class SharedMemoryTransport final : public Transport {
 public:
   SharedMemoryTransport(std::string name, bool server, Configuration config);
@@ -27,6 +29,9 @@ private:
   ReceiveCallback callback_;
   std::atomic<bool> running_{false};
   std::thread worker_;
+  // Serialize publishes and prevent stop() from unmapping a live publisher.
+  // Do NOT hold this mutex while joining the receiver thread: a callback may publish.
+  std::mutex publish_mutex_;
   void* mapping_{nullptr};
   std::size_t mapping_size_{0};
   bool owns_name_{false};
