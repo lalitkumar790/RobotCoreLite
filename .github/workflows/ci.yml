@@ -16,6 +16,8 @@ jobs:
       - run: python3 scripts/analyze_sensor_runs.py --help > /dev/null
       - run: bash -n scripts/run_benchmarks.sh
       - run: bash -n scripts/run_comparison.sh
+      - run: bash -n scripts/run_shm_path_benchmark.sh
+      - run: bash -n scripts/run_shm_load.sh
       - run: bash -n scripts/test_ros_sensor_bridge.sh
   ros-build:
     runs-on: ubuntu-24.04
@@ -114,3 +116,32 @@ jobs:
           source install/setup.bash
           SENSOR_EVENTS_DIR=/tmp/rc-typed-persistent timeout 65s bash scripts/test_ros_sensor_bridge.sh persistent_shm 250 10
           test -s /tmp/rc-typed-persistent/paired_events.csv
+
+  shm-loan-functional-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Verify SHM copied and loaned paths across two processes (functional only)
+        shell: bash
+        run: |
+          RUNS=2 SAMPLES=12 WARMUP=4 PAYLOADS="64 4096" \
+            timeout 120s bash scripts/run_shm_path_benchmark.sh
+          test "$(find results/raw -name 'r*_*.csv' | wc -l)" -eq 8
+          test "$(find results/raw -name 'shm_path_report.md' -size +0c | wc -l)" -eq 1
+      - name: CI runs must not be interpreted as performance evidence
+        run: echo "Functional delivery and report validation only; not a performance benchmark."
+
+  shm-load-functional-smoke:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate complete copied/loaned SHM traces under deliberate backpressure
+        shell: bash
+        run: |
+          RUNS=2 FRAMES=30 PAYLOADS="64 4096" DELAYS_US="0 250" \
+            timeout 100s bash scripts/run_shm_load.sh
+          test "$(find results/raw -name '*.sender.csv' | wc -l)" -eq 16
+          test "$(find results/raw -name '*.receiver.csv' | wc -l)" -eq 16
+          test "$(find results/raw -name 'load_report.md' -size +0c | wc -l)" -eq 1
+      - name: Never interpret virtualized CI latency as comparative evidence
+        run: echo "Checks frame correctness, pairing, and completion only."
