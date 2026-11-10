@@ -105,6 +105,11 @@ Three binaries compile the **same typed ROS 2 `sensor_msgs/msg/LaserScan` CDR br
 
 This is **not** a real-robot latency measurement, a security-hardened CDR decoder, or proof that IPC outperforms DDS. The native Linux IPC/SHM bridges are now accompanied by a **direct typed DDS control and a same-three-process CDR/DDS bridge** built from the same LaserScan generator/validator. The functional runner requires exact contiguous sequences, verifies publisher and receiver counts, and exercises all four paths with 250 generated frames at a requested 10 ms source period in Jazzy CI. The direct DDS control has fewer application hops, while the CDR/DDS bridge matches three application roles with the native paths. `SENSOR_EVENTS_DIR` enables per-sequence same-host monotonic source/sink observations and strict CSV pairing. Queueing and framing still differ, and **CI timings are not research-grade performance evidence**. No physical sensor or full robotics control-loop measurements have been made. See [demo scope](docs/native-ros-sensor-demo.md).
 
+
+### Repeatable matched-topology LaserScan experiment collection
+
+Use `python3 scripts/run_sensor_experiment.py --repetitions 4 --frames 250 --period-ms 10 --seed 790` on a controlled Ubuntu 24.04 / ROS 2 Jazzy host. The experiment cycles four three-application-process paths (DDS/CDR, IPC, bounded SHM, persistent SHM) through seeded shuffled/rotated orders. It saves all per-frame source/sink timestamps, raw paired observations, run logs, a host environment manifest and descriptive per-run results. Failures are recorded and stop the run instead of being excluded. **No latency superiority or research performance claim is established by CI.** See [experiment collection protocol](docs/sensor-experiment-collection.md).
+
 ### Research plan
 1. Measure baseline DDS under controlled conditions.
 2. Introduce transport abstraction and explicit configuration.
