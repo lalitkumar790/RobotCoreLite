@@ -56,6 +56,16 @@ if [[ -n "$events_dir" ]]; then
   source_events=(--events-csv "$events_dir/source_events.csv")
   sink_events=(--events-csv "$events_dir/sink_events.csv")
 fi
+# Optional process identity stream for the experiment collector's /proc
+# sampler. This is metadata; no per-frame logging occurs inside callbacks.
+if [[ -n "$events_dir" && "${SENSOR_PROFILE_PROCESSES:-0}" == 1 ]]; then
+  printf 'role,pid\n' > "$events_dir/process_ids.csv"
+fi
+record_pid() {
+  if [[ -n "$events_dir" && "${SENSOR_PROFILE_PROCESSES:-0}" == 1 ]]; then
+    printf '%s,%s\n' "$1" "$2" >> "$events_dir/process_ids.csv"
+  fi
+}
 sink=""
 bridge=""
 source_pid=""
@@ -77,6 +87,7 @@ trap cleanup EXIT
 if [[ "$mode" == persistent_shm ]]; then
   "$bin" --role manager "$flag" "$endpoint" > "$logdir/manager.log" 2>&1 &
   manager=$!
+  record_pid manager "$manager"
   for i in $(seq 1 100); do
     grep -q '^manager_ready_epoch=1$' "$logdir/manager.log" && break
     if ! kill -0 "$manager" 2>/dev/null; then break; fi
@@ -94,6 +105,7 @@ else
   "$bin" --role sink "$flag" "$endpoint" --samples "$frames" --period-ms "$period_ms" "${sink_events[@]}" > "$logdir/sink.log" 2>&1 &
 fi
 sink=$!
+record_pid sink "$sink"
 for i in $(seq 1 100); do
   if [[ "$mode" == dds || "$mode" == dds_bridge ]] && kill -0 "$sink" 2>/dev/null; then break; fi
   if [[ "$mode" == ipc && -S "$endpoint" ]]; then break; fi
@@ -119,6 +131,7 @@ if [[ "$mode" != dds ]]; then
     "$bin" --role bridge "$flag" "$endpoint" --period-ms "$period_ms" > "$logdir/bridge.log" 2>&1 &
   fi
   bridge=$!
+  record_pid bridge "$bridge"
 fi
 if [[ "$mode" == dds_bridge ]]; then
   for i in $(seq 1 160); do
@@ -141,6 +154,7 @@ if [[ "$mode" != dds ]] && ! kill -0 "$bridge" 2>/dev/null; then
 fi
 "$bin" --role source --samples "$frames" --period-ms "$period_ms" "${source_events[@]}" > "$logdir/source.log" 2>&1 &
 source_pid=$!
+record_pid source "$source_pid"
 if ! wait "$source_pid"; then
   echo "LaserScan publisher failed to emit all requested frames ($mode):" >&2
   cat "$logdir/source.log" "$logdir/sink.log" >&2

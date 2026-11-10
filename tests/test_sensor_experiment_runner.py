@@ -124,6 +124,12 @@ PY
                 self.assertEqual(len(list(csv.DictReader(f))), 4)
             self.assertIn("Validated runs: **4/4**",
                           (result / "report.md").read_text())
+            self.assertTrue((result / "run_uncertainty.json").is_file())
+            analysis = json.loads((result / "run_uncertainty.json").read_text())
+            self.assertFalse(analysis["performance_claim"])
+            self.assertEqual(analysis["rounds"], 2)
+            self.assertIsNone(analysis["paired_differences"]["shm"][
+                "exploratory_resampling"])
 
     def test_failure_is_not_hidden(self):
         with tempfile.TemporaryDirectory() as directory:
