@@ -74,6 +74,30 @@ ctest --test-dir build/shm --output-on-failure --repeat until-fail:20
 
 See [shared-memory design](docs/shared-memory.md). Successful functional tests are not latency measurements.
 
+### SHM load and backpressure research (draft PR #24)
+
+The session-SHM transport has **two separate experimental tools** for
+performance investigation. Neither is an optimized Fast DDS comparison:
+
+```bash
+# Cross-process single-in-flight RTT with copied vs borrowed buffers.
+RUNS=6 SAMPLES=2000 WARMUP=200 bash scripts/run_shm_path_benchmark.sh
+
+# Cross-process repeated producer load with optional slow-receiver pressure.
+RUNS=6 FRAMES=5000 PAYLOADS="64 4096 65536" DELAYS_US="0 250 1000" \
+  bash scripts/run_shm_load.sh
+```
+
+The load tool records per-frame publisher API duration and same-host
+source-intent-to-callback-entry latency, requires complete contiguous delivery
+and reports per-run P50/P99/max. Borrowed callbacks retain their SHM slots
+during callback execution while copied callbacks free the slot first.
+Deliberate receiver delay therefore tests the resulting backpressure trade-off.
+CI exercises correctness only, not comparative speed. See
+[load experiment](docs/shm-load-experiment.md) and
+[loan-versus-copy methodology](docs/shm-path-performance.md).
+**Do not claim DDS superiority or bounded tail latency from these experiments.**
+
 ### Persistent shared memory (manager-owned region, experimental)
 
 A distinct fourth transport has a region manager that keeps a bounded POSIX mapping alive across endpoint sessions. The manager explicitly starts new sessions with increasing epochs and resets abandoned synchronization only after verifying previous processes are gone. Endpoints are limited to one server and client per epoch, with owned receive copies (not zero-copy).
