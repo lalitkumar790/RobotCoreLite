@@ -115,6 +115,15 @@ SharedMemoryTransport::SharedMemoryTransport(std::string name, bool server,
 SharedMemoryTransport::~SharedMemoryTransport() { (void)stop(); }
 
 Status SharedMemoryTransport::start(ReceiveCallback callback) {
+  return start_impl(std::move(callback), {});
+}
+
+Status SharedMemoryTransport::start_borrowed(BorrowedReceiveCallback callback) {
+  return start_impl({}, std::move(callback));
+}
+
+Status SharedMemoryTransport::start_impl(ReceiveCallback callback,
+                                        BorrowedReceiveCallback borrowed) {
   if (running_ || worker_.joinable())
     return Status::failure(Error::already_started, "stop required before restart");
   const auto valid = validate(config_);
@@ -123,7 +132,7 @@ Status SharedMemoryTransport::start(ReceiveCallback callback) {
       config_.queue_depth != 1 || !config_.reliable)
     return Status::failure(Error::invalid_argument,
                            "shared memory currently requires depth=1 and reliable=true");
-  if (!valid_name(name_) || !callback)
+  if (!valid_name(name_) || (!callback && !borrowed))
     return Status::failure(Error::invalid_argument, "invalid shm name or missing callback");
   if (config_.max_payload_bytes > (SIZE_MAX - sizeof(Region)) / 2)
     return Status::failure(Error::too_large, "region size overflow");
@@ -229,15 +238,112 @@ Status SharedMemoryTransport::start(ReceiveCallback callback) {
     }
   }
   callback_ = std::move(callback);
+  borrowed_callback_ = std::move(borrowed);
   running_ = true;
   try {
     worker_ = std::thread([this] { receive_loop(); });
   } catch (...) {
     running_ = false;
     callback_ = {};
+    borrowed_callback_ = {};
     release_resources();
     return Status::failure(Error::io_error, "unable to start receive worker");
   }
+  return Status::success();
+}
+
+
+SharedMemoryTransport::WriteLoan::WriteLoan(WriteLoan&& other) noexcept
+  : owner_(std::exchange(other.owner_, nullptr)),
+    lock_(std::move(other.lock_)),
+    slot_(std::exchange(other.slot_, nullptr)),
+    data_(std::exchange(other.data_, nullptr)),
+    capacity_(std::exchange(other.capacity_, 0)) {}
+
+SharedMemoryTransport::WriteLoan&
+SharedMemoryTransport::WriteLoan::operator=(WriteLoan&& other) noexcept {
+  if (this != &other) {
+    discard();
+    lock_ = std::move(other.lock_);
+    owner_ = std::exchange(other.owner_, nullptr);
+    slot_ = std::exchange(other.slot_, nullptr);
+    data_ = std::exchange(other.data_, nullptr);
+    capacity_ = std::exchange(other.capacity_, 0);
+  }
+  return *this;
+}
+
+void SharedMemoryTransport::WriteLoan::discard() noexcept {
+  if (owner_) {
+    // The publisher owns the reserved slot until either commit() or discard().
+    ::sem_post(&static_cast<Slot*>(slot_)->free);
+    owner_ = nullptr;
+    slot_ = nullptr;
+    data_ = nullptr;
+    capacity_ = 0;
+  }
+  if (lock_.owns_lock()) lock_.unlock();
+}
+
+Status SharedMemoryTransport::WriteLoan::commit(std::uint64_t sequence,
+                                                 std::size_t size) {
+  if (!owner_)
+    return Status::failure(Error::not_started, "write loan already consumed");
+  if (size > capacity_)
+    return Status::failure(Error::too_large, "loan commit exceeds reserved capacity");
+  if (!owner_->running_ || (!owner_->server_ && !owner_->owner_alive())) {
+    discard();
+    return Status::failure(Error::closed, "transport stopped during write loan");
+  }
+  auto* slot = static_cast<Slot*>(slot_);
+  slot->seq = sequence;
+  slot->size = static_cast<std::uint32_t>(size);
+  slot->hash = hash_payload(data_, size);
+  if (::sem_post(&slot->filled) != 0) {
+    discard(); // Do not leave an unwritten slot permanently acquired.
+    return Status::failure(Error::io_error, "cannot commit loaned slot");
+  }
+  owner_ = nullptr;
+  slot_ = nullptr;
+  data_ = nullptr;
+  capacity_ = 0;
+  lock_.unlock();
+  return Status::success();
+}
+
+Status SharedMemoryTransport::acquire_write_loan(WriteLoan& result) {
+  if (result)
+    return Status::failure(Error::invalid_argument, "discard existing write loan first");
+  // A live loan retains this mutex until commit/discard; concurrent stop()
+  // joins the receiver first, then waits here before unmapping the region.
+  std::unique_lock<std::mutex> guard(publish_mutex_);
+  if (!mapping_)
+    return Status::failure(Error::not_started, "shared-memory endpoint not started");
+  if (!server_ && !owner_alive())
+    return Status::failure(Error::closed, "shared-memory owner closed");
+  if (!running_)
+    return Status::failure(Error::not_started, "shared-memory endpoint not running");
+  auto* region = static_cast<Region*>(mapping_);
+  const int index = server_ ? 1 : 0;
+  auto& slot = region->slots[index];
+  const auto deadline = std::chrono::steady_clock::now() +
+                        std::chrono::milliseconds(kWriteTimeoutMs);
+  bool acquired = false;
+  while (running_ && std::chrono::steady_clock::now() < deadline) {
+    if (!server_ && !owner_alive())
+      return Status::failure(Error::closed, "shared-memory owner closed");
+    if (wait_one(&slot.free, kPollMs) == 0) { acquired = true; break; }
+    if (errno != ETIMEDOUT && errno != EINTR)
+      return Status::failure(Error::io_error, "loan free-slot semaphore failed");
+  }
+  if (!acquired)
+    return Status::failure(Error::io_error, "loaned slot unavailable or peer stalled");
+  if (!running_ || (!server_ && !owner_alive())) {
+    ::sem_post(&slot.free);
+    return Status::failure(Error::closed, "transport closed after loan acquisition");
+  }
+  result = WriteLoan(this, std::move(guard), &slot, bytes(region, index),
+                     region->capacity);
   return Status::success();
 }
 
@@ -296,30 +402,43 @@ void SharedMemoryTransport::receive_loop() {
       break;
     }
     if (!running_) { ::sem_post(&slot.free); break; }
-    const auto size = slot.size;
-    bool valid = size <= region->capacity && size <= config_.max_payload_bytes;
-    Message message;
-    if (valid) {
-      message.sequence = slot.seq;
-      auto* ptr = bytes(region, index);
-      valid = slot.hash == hash_payload(ptr, size);
-      if (valid) message.payload.assign(ptr, ptr + size);
-    }
-    // A message is copied before slot reuse, but a callback may still
-    // generate a response. Fence new clients until that callback finishes.
-    if (valid)
-      __atomic_store_n(&region->callbacks_active[index], 1u, __ATOMIC_RELEASE);
-    ::sem_post(&slot.free);
-    if (!valid) {
+    const auto count = slot.size;
+    const auto sequence = slot.seq;
+    const auto* ptr = bytes(region, index);
+    bool good = count <= region->capacity &&
+                count <= config_.max_payload_bytes;
+    if (good) good = slot.hash == hash_payload(ptr, count);
+    if (!good) {
+      ::sem_post(&slot.free);
       if (server_) __atomic_store_n(&region->ready, 3u, __ATOMIC_RELEASE);
       running_ = false;
       break;
     }
-    try {
-      callback_(std::move(message));
-    } catch (...) {
-      if (server_) __atomic_store_n(&region->ready, 3u, __ATOMIC_RELEASE);
-      running_ = false;
+
+    __atomic_store_n(&region->callbacks_active[index], 1u, __ATOMIC_RELEASE);
+    if (borrowed_callback_) {
+      // The borrowed view points directly into shared memory. Keep 'free'
+      // acquired until the callback returns, so the writer cannot overwrite.
+      // This callback must not keep the pointer after returning.
+      try {
+        borrowed_callback_(BorrowedMessage{sequence, ptr, count});
+      } catch (...) {
+        if (server_) __atomic_store_n(&region->ready, 3u, __ATOMIC_RELEASE);
+        running_ = false;
+      }
+      ::sem_post(&slot.free);
+    } else {
+      Message owned;
+      owned.sequence = sequence;
+      owned.payload.assign(ptr, ptr + count);
+      // The traditional copying callback has independent owned payload.
+      ::sem_post(&slot.free);
+      try {
+        callback_(std::move(owned));
+      } catch (...) {
+        if (server_) __atomic_store_n(&region->ready, 3u, __ATOMIC_RELEASE);
+        running_ = false;
+      }
     }
     __atomic_store_n(&region->callbacks_active[index], 0u, __ATOMIC_RELEASE);
     if (!running_) break;
@@ -364,6 +483,7 @@ Status SharedMemoryTransport::stop() {
   running_ = false;
   if (worker_.joinable()) worker_.join();
   callback_ = {};
+  borrowed_callback_ = {};
   // Receiver is joined first; it may publish from a callback. Only after
   // its exit can we wait for in-flight publishers and release the mapping.
   {
